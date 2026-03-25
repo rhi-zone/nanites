@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: nanites
-  text: Turn-primitive orchestration framework
-  tagline: Recursive decomposition through stateless turns
+  text: Amorphous intelligence
+  tagline: Composable functions for AI orchestration — no agents, no conversations, no accumulated context
   actions:
     - theme: brand
       text: Get Started
@@ -14,10 +14,10 @@ hero:
       link: https://github.com/rhi-zone/nanites
 
 features:
-  - title: Turns, not agents
-    details: The fundamental unit is a stateless typed transformation — not a persistent agent with identity and accumulated context.
-  - title: Model-agnostic
-    details: Swap models between turns freely. Mix by cost, capability, or availability. Each turn is a fresh call.
+  - title: Functions, not agents
+    details: The fundamental unit is a function call — stateless, typed, composable. LLM calls are just one implementation alongside deterministic transforms and tool invocations.
+  - title: Recursive decomposition
+    details: Problems break into trees of subproblems. As they become well-defined, LLMs fall away at the leaves. The orchestrator is a program, not an agent.
   - title: Parallelism by default
-    details: Independent turns run concurrently. The execution shape matches the problem shape.
+    details: Independent calls run concurrently. The execution shape matches the problem shape. No coordination protocol — just futures.
 ---

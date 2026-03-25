@@ -4,51 +4,71 @@ Behavioral rules for Claude Code in the nanites repository.
 
 ## Project Overview
 
-Turn-primitive orchestration framework
+Amorphous intelligence — an ecosystem of composable functions for AI orchestration without agents, conversations, or accumulated context.
 
 Part of the [rhi ecosystem](https://rhi.zone).
 
 ## Origin
 
+### The problem
+
 Modern AI agent architectures (conversational agents, agentic swarms, RLM, Slate's thread weaving) all share a fundamental flaw: they build on conversation as the foundational primitive. Conversation accumulates context — and accumulating context is context poisoning. The "Dumb Zone," compaction, episode compression, subagent isolation — these are all patches on a broken foundation.
 
-Nanites starts from a different primitive: **the turn**. A turn is a stateless, typed transformation: `T -> U`. It takes an input, produces an output, and accumulates nothing. The LLM is one possible implementation of a turn, but so is a deterministic function, a database lookup, or any other callable.
+The key insight: instruct-tuned models are trained on **turns**, not conversations. A turn is just context in, output out. Accumulating context between turns is an assumption the industry imposed, not a requirement of the model. Conversation is a format we layered on top of a stateless sampling primitive.
 
-Key insights from the founding conversation:
-- **Turns are not conversation.** Instruct-tuned models are trained on turns, not conversations. Accumulating context between turns is an assumption we imposed, not a requirement.
-- **The agent is the wrong unit.** Agents imply persistent identity, goals, and continuity — none of which the model has. The turn is the right unit.
-- **Recursive decomposition is the architecture.** Problems decompose into trees of subproblems. Each leaf is a turn. Parallelism, model-swapping, and tractability fall out naturally.
-- **LLMs are optional at the leaves.** As problems decompose, they become well-defined. Well-defined problems don't need world knowledge — they need execution. The LLM falls away at the leaves.
-- **The orchestrator is a program, not an agent.** Orchestration is regular code — Rust functions, async, tokio. The LLM is an oracle called by the program, not a coordinator.
-- **Turns are model-agnostic.** Fresh context per call means you can swap models between turns trivially — mix by cost, capability, or availability.
+### The thesis
 
-The name "nanites" comes from: tiny homogeneous units, massively parallel, each does a simple transformation, the collective effect is powerful.
+1. **Conversation is context poisoning.** Every turn that accumulates prior outputs poisons the context. The model conditions on its own errors, the possibility space narrows, context fills with conversational artifacts instead of task-relevant data.
 
-**Proof-of-concept goal:** Build a fully general software engineering agent that beats frontier tools (Claude Code, Codex) on reliability, cost, and task length — or prove the thesis wrong. No special-casing, no tricks. If the architecture is right, it should win by being simpler.
+2. **The agent is the wrong unit.** Agents imply persistent identity, goals, and continuity — none of which the model has. The right unit is the **function call**: stateless, typed (`T -> U`), composable, parallelizable. An LLM call is just one implementation — so is a deterministic function, a database lookup, or any other callable.
+
+3. **Recursive decomposition is the architecture.** Problem solving is waypointing: decompose to the nearest landmark, get there, decompose again. Problems break down into trees of subproblems. As chunks become smaller they become more well-defined. Well-defined problems don't need world knowledge — they need execution. LLMs fall away at the leaves.
+
+4. **The orchestrator is a program, not an agent.** Orchestration is regular code — Rust functions, async, tokio. The LLM is an oracle called by the program when world knowledge is needed. The LLM decides; the program acts on the decision.
+
+5. **No trait, just functions.** The fundamental primitive is `async Fn(I) -> Result<O, E>` — Rust's native function type. No framework trait wrapping it. Composition, parallelism, and model-swapping fall out naturally from this being just a function.
+
+### What nanites is
+
+- **An ecosystem of composable library crates** — each independently useful, each providing high-quality functions anyone can use. Abstraction-as-an-ecosystem.
+- **A plugin host** — pulls in arbitrary capability plugins and makes them immediately usable. Lowers the barrier to entry.
+- **An orchestrator binary** — the default composition that ties everything together into a fully general software engineering tool.
+
+The name "nanites" comes from: tiny homogeneous units, massively parallel, each does a simple transformation, the collective effect is powerful. A nanite is a running function — the invocation, not the definition. "Launch a fleet of nanites" = dispatch a batch of function calls.
+
+### Proof-of-concept goal
+
+Build a fully general software engineering agent that beats frontier tools (Claude Code, Codex) on reliability, cost, and task length — or prove the thesis wrong. No special-casing, no tricks. If the architecture is right, it should win by being simpler.
 
 ## Architecture
 
 ### Core Primitive
 
 ```
-Turn: T -> U
+async Fn(I) -> Result<O, E>
 ```
 
-A turn is a stateless typed transformation. No accumulated context, no identity, no session. The orchestration program constructs the input, calls the turn, receives the output.
+A nanite is a stateless function invocation. No accumulated context, no identity, no session. The orchestration program constructs the input, calls the function, receives the output. LLM calls, deterministic transforms, tool invocations — all just functions.
 
 ### Execution Model
 
 - **Orchestration is a Rust program.** Control flow, decomposition, and state management are regular code.
 - **LLM as oracle.** The program calls the LLM when world knowledge is needed. The LLM decides; the program acts on the decision.
-- **Parallelism via async.** Independent turns run concurrently through tokio. No coordination protocol — just futures.
-- **Context construction is explicit.** Each turn receives exactly the context it needs, curated by the program. No growing conversation, no compression needed.
+- **Parallelism via async.** Independent calls run concurrently through tokio. No coordination protocol — just futures.
+- **Context construction is explicit.** Each LLM call receives exactly the context it needs, curated by the program. No growing conversation, no compression needed.
 - **Recursive decomposition.** Complex tasks decompose into subtasks until the leaves are trivially solvable — potentially without an LLM at all.
+
+### Crate Structure
+
+- **Library crates** — independently useful, composable functions. Parallel combinators, context construction, tool abstractions, structured output parsing.
+- **`nanites-rig`** — LLM calls via rig. One implementation of the function primitive. Swappable for any other LLM library.
+- **`nanites`** (binary) — the plugin host and orchestrator. Discovers plugins, composes them, presents a unified surface.
 
 ### Stack
 
 - **Rust** — the orchestration language
-- **rig** — model-agnostic LLM completion primitives
-- **tokio** — async runtime for parallel turns
+- **rig** — LLM completion primitives (behind `nanites-rig`)
+- **tokio** — async runtime for parallel execution
 
 ## Development
 
