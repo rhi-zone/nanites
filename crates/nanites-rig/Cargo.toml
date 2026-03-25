@@ -1,0 +1,10 @@
+[package]
+name = "nanites-rig"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+description = "LLM completion functions via rig"
+
+[dependencies]
+rig-core = "0.33"
+thiserror = "2"
