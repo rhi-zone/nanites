@@ -1,5 +1,5 @@
 {
-  description = "nanites - Turn-primitive orchestration framework";
+  description = "nanites - Flexible orchestration";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

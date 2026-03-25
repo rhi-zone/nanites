@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: nanites
-  text: Amorphous intelligence
-  tagline: Composable functions for AI orchestration — no agents, no conversations, no accumulated context
+  text: Flexible orchestration
+  tagline: Pausable, inspectable, composable — orchestration that works the way you think
   actions:
     - theme: brand
       text: Get Started

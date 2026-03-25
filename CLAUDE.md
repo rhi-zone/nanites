@@ -4,7 +4,7 @@ Behavioral rules for Claude Code in the nanites repository.
 
 ## Project Overview
 
-Amorphous intelligence — an ecosystem of composable functions for AI orchestration without agents, conversations, or accumulated context.
+Flexible orchestration.
 
 Part of the [rhi ecosystem](https://rhi.zone).
 
