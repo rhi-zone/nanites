@@ -106,7 +106,7 @@ impl Ctx {
     pub fn spawn<T>(&self, task: T, input: T::Input) -> TaskHandle<T::Output>
     where
         T: Task + fmt::Debug + Clone,
-        T::Error: std::error::Error + Send + Sync + 'static,
+        T::Error: Into<crate::error::BoxError>,
     {
         let erased: SharedDynTask = erase(task);
         let boxed_input: AnyInput = Box::new(input);
@@ -153,7 +153,7 @@ impl Ctx {
     pub fn spawn_all<T>(&self, task: T, inputs: Vec<T::Input>) -> Vec<TaskHandle<T::Output>>
     where
         T: Task + fmt::Debug + Clone,
-        T::Error: std::error::Error + Send + Sync + 'static,
+        T::Error: Into<crate::error::BoxError>,
     {
         inputs
             .into_iter()

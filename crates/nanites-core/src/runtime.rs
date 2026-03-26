@@ -165,7 +165,7 @@ impl Runtime {
     pub fn spawn<T>(&self, task: T, input: T::Input) -> TaskHandle<T::Output>
     where
         T: Task + fmt::Debug + Clone,
-        T::Error: std::error::Error + Send + Sync + 'static,
+        T::Error: Into<crate::error::BoxError>,
     {
         let ctx = self.root_ctx();
         ctx.spawn(task, input)
@@ -177,7 +177,7 @@ impl Runtime {
     pub async fn run<T>(&self, task: T, input: T::Input) -> Result<T::Output, RuntimeError>
     where
         T: Task + fmt::Debug + Clone,
-        T::Error: std::error::Error + Send + Sync + 'static,
+        T::Error: Into<crate::error::BoxError>,
     {
         self.spawn(task, input).await
     }

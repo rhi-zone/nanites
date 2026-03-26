@@ -183,7 +183,7 @@ impl TaskRegistry {
     pub fn register_with_name<T>(&mut self, type_name: &str)
     where
         T: crate::task::Task + serde::de::DeserializeOwned + std::fmt::Debug + Clone + 'static,
-        T::Error: std::error::Error + Send + Sync + 'static,
+        T::Error: Into<crate::error::BoxError>,
     {
         self.factories.insert(
             type_name.to_string(),

@@ -172,9 +172,11 @@ cd docs && bun dev # Local docs
 
 **Batch cargo commands** to minimize round-trips:
 ```bash
-cargo clippy --all-targets --all-features -- -D warnings && cargo test
+cargo clippy --all-targets --all-features -- -D warnings && cargo test -q
 ```
 After editing multiple files, run the full check once — not after each edit. Formatting is handled automatically by the pre-commit hook (`cargo fmt`).
+
+**Prefer `cargo test -q`** over `cargo test` — quiet mode only prints failures, significantly reducing output noise and context usage.
 
 **When making the same change across multiple crates**, edit all files first, then build once.
 

@@ -220,7 +220,7 @@ impl<T: crate::task::Task + fmt::Debug + Clone> fmt::Debug for ErasedTask<T> {
 impl<T> DynTask for ErasedTask<T>
 where
     T: crate::task::Task + fmt::Debug + Clone,
-    T::Error: std::error::Error + Send + Sync + 'static,
+    T::Error: Into<crate::error::BoxError>,
 {
     fn type_name(&self) -> &'static str {
         std::any::type_name::<T>()
@@ -258,7 +258,7 @@ where
             let result = task.run(typed_input, ctx).await;
             Ok(result
                 .map(|out| -> AnyOutput { Box::new(out) })
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) }))
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() }))
         })
     }
 
@@ -309,7 +309,7 @@ pub type SharedDynTask = Arc<dyn DynTask>;
 pub fn erase<T>(task: T) -> SharedDynTask
 where
     T: crate::task::Task + fmt::Debug + Clone,
-    T::Error: std::error::Error + Send + Sync + 'static,
+    T::Error: Into<crate::error::BoxError>,
 {
     Arc::new(ErasedTask::new(task))
 }
@@ -338,7 +338,7 @@ where
         + 'static,
     T::Input: serde::Serialize,
     T::Output: serde::Serialize + Clone + Send + Sync + 'static,
-    T::Error: std::error::Error + Send + Sync + 'static,
+    T::Error: Into<crate::error::BoxError>,
 {
     let inner = Arc::new(task);
     let inner_for_params = Arc::clone(&inner);

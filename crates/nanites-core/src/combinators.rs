@@ -67,7 +67,7 @@ pub struct Map<T> {
 impl<T> Task for Map<T>
 where
     T: Task + fmt::Debug + Clone,
-    T::Error: std::error::Error + Send + Sync + 'static,
+    T::Error: Into<crate::error::BoxError>,
 {
     type Input = Vec<T::Input>;
     type Output = Vec<T::Output>;
@@ -200,7 +200,7 @@ pub struct Refine<T: Task> {
 impl<T> Task for Refine<T>
 where
     T: Refineable + fmt::Debug + Clone,
-    T::Error: std::error::Error + Send + Sync + 'static,
+    T::Error: Into<crate::error::BoxError>,
     T::Input: Clone,
 {
     type Input = T::Input;
@@ -285,7 +285,7 @@ pub struct Retry<T> {
 impl<T> Task for Retry<T>
 where
     T: Task + fmt::Debug + Clone,
-    T::Error: std::error::Error + Send + Sync + 'static,
+    T::Error: Into<crate::error::BoxError>,
     T::Input: Clone,
 {
     type Input = T::Input;
