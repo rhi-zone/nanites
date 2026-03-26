@@ -51,6 +51,10 @@ pub enum RuntimeError {
         /// TypeId produced by the task.
         got: TypeId,
     },
+    /// An I/O task was spawned but no executor is registered for its type.
+    ///
+    /// Register an executor with [`crate::Runtime::register_executor`].
+    NoExecutor(&'static str),
 }
 
 impl std::fmt::Display for RuntimeError {
@@ -65,6 +69,13 @@ impl std::fmt::Display for RuntimeError {
                 write!(
                     f,
                     "output type mismatch: expected {expected:?}, got {got:?}"
+                )
+            }
+            RuntimeError::NoExecutor(type_name) => {
+                write!(
+                    f,
+                    "no executor registered for I/O task {type_name:?}; \
+                     call Runtime::register_executor before spawning this task"
                 )
             }
         }

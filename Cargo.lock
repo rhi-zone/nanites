@@ -853,6 +853,7 @@ dependencies = [
 name = "nanites-rig"
 version = "0.0.1"
 dependencies = [
+ "futures",
  "nanites-core",
  "rig-core",
  "serde",

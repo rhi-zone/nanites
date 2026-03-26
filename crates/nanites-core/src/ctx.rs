@@ -7,6 +7,7 @@
 //!
 //! Nothing LLM-specific, nothing domain-specific belongs here.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -14,6 +15,7 @@ use crate::cancellation::CancellationToken;
 use crate::dyn_task::{AnyInput, AnyOutput, SharedDynTask, downcast_output, erase};
 use crate::error::RuntimeError;
 use crate::exec_graph::ExecGraph;
+use crate::executor::TaskExecutor;
 use crate::frontier::{FrontierHandle, NodeId};
 use crate::handle::TaskHandle;
 use crate::scaffold::Scaffold;
@@ -32,6 +34,8 @@ pub struct Ctx {
     pub(crate) node_id: Option<NodeId>,
     /// Scaffolds inherited from the runtime.
     scaffolds: Arc<Vec<Scaffold>>,
+    /// Registered I/O task executors, keyed by task type name.
+    executors: Arc<HashMap<&'static str, Arc<dyn TaskExecutor>>>,
 }
 
 impl fmt::Debug for Ctx {
@@ -50,6 +54,7 @@ impl Ctx {
         exec_graph: ExecGraph,
         cancel: CancellationToken,
         scaffolds: Arc<Vec<Scaffold>>,
+        executors: Arc<HashMap<&'static str, Arc<dyn TaskExecutor>>>,
     ) -> Self {
         Ctx {
             frontier,
@@ -57,6 +62,7 @@ impl Ctx {
             cancel,
             node_id: None,
             scaffolds,
+            executors,
         }
     }
 
@@ -68,6 +74,7 @@ impl Ctx {
             cancel: self.cancel.clone(),
             node_id: Some(node_id),
             scaffolds: Arc::clone(&self.scaffolds),
+            executors: Arc::clone(&self.executors),
         }
     }
 
@@ -199,6 +206,10 @@ impl Ctx {
         let cancel = self.cancel.clone();
         let child_ctx = self.child(node_id);
 
+        // Look up a registered executor for this task type.
+        let executor: Option<Arc<dyn crate::executor::TaskExecutor>> =
+            self.executors.get(task.type_name()).cloned();
+
         tokio::spawn(async move {
             if cancel.is_cancelled() {
                 frontier.set_cancelled(node_id);
@@ -210,24 +221,26 @@ impl Ctx {
 
             frontier.set_running(node_id);
 
-            let result = task.run_erased(input, &child_ctx).await;
+            // Dispatch: registered executor takes priority over run_erased.
+            let outcome: Result<AnyOutput, RuntimeError> = if let Some(exec) = executor {
+                exec.execute_erased(task.task_as_any(), input, &child_ctx)
+                    .await
+                    .map_err(|e| RuntimeError::TaskPanicked(e.to_string()))
+            } else {
+                let result = task.run_erased(input, &child_ctx).await;
+                match result {
+                    Ok(inner) => inner.map_err(|e| RuntimeError::TaskPanicked(e.to_string())),
+                    Err(e) => Err(e),
+                }
+            };
 
-            match result {
-                Ok(inner) => match inner {
-                    Ok(output) => {
-                        frontier.set_completed(node_id);
-                        frontier.remove_terminal(node_id);
-                        exec_graph.set_completed(node_id, output_type_name);
-                        on_done(Ok(output));
-                    }
-                    Err(e) => {
-                        let msg = e.to_string();
-                        frontier.set_failed(node_id, msg.clone());
-                        frontier.remove_terminal(node_id);
-                        exec_graph.set_failed(node_id, msg);
-                        on_done(Err(RuntimeError::TaskPanicked(e.to_string())));
-                    }
-                },
+            match outcome {
+                Ok(output) => {
+                    frontier.set_completed(node_id);
+                    frontier.remove_terminal(node_id);
+                    exec_graph.set_completed(node_id, output_type_name);
+                    on_done(Ok(output));
+                }
                 Err(e) => {
                     let msg = e.to_string();
                     frontier.set_failed(node_id, msg.clone());

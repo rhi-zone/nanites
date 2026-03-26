@@ -5,6 +5,11 @@
 //! implementors are wrapped in [`ErasedTask`], which boxes the run function
 //! and carries type-identity information for runtime checks.
 //!
+//! I/O tasks — those that need external resources and are executed by a
+//! registered [`crate::executor::TaskExecutor`] — are wrapped in
+//! [`ErasedIoTask`]. They implement `DynTask` but `run_erased` returns an
+//! error directing the caller to register an executor.
+//!
 //! # Type safety model
 //!
 //! - **Static** (`ctx.spawn::<T>(task, input)`) — full compile-time checking.
@@ -38,7 +43,8 @@ pub struct TaskTypes {
 
 /// Trait object interface for tasks.
 ///
-/// Implemented by [`ErasedTask`]. You should not need to implement this manually.
+/// Implemented by [`ErasedTask`] (pure tasks) and [`ErasedIoTask`] (I/O tasks).
+/// You should not need to implement this manually.
 pub trait DynTask: Send + Sync + fmt::Debug {
     /// Human-readable name of the concrete task type (for logging / frontier display).
     fn type_name(&self) -> &'static str;
@@ -47,6 +53,13 @@ pub trait DynTask: Send + Sync + fmt::Debug {
     fn task_types(&self) -> TaskTypes;
 
     /// Execute with type-erased input.
+    ///
+    /// For pure tasks (backed by [`ErasedTask`]), this delegates to
+    /// [`crate::Task::run`].
+    ///
+    /// For I/O tasks (backed by [`ErasedIoTask`]), this returns
+    /// [`RuntimeError::NoExecutor`] — the runtime dispatches to a registered
+    /// [`crate::executor::TaskExecutor`] instead of calling this.
     ///
     /// Returns [`RuntimeError::InputTypeMismatch`] if `input` is not the
     /// expected concrete type.
@@ -59,7 +72,17 @@ pub trait DynTask: Send + Sync + fmt::Debug {
     /// Clone into a fresh `Box<dyn DynTask>`.
     fn clone_box(&self) -> Box<dyn DynTask>;
 
+    /// Downcast to `&dyn Any` pointing at the **inner task struct** (not the wrapper).
+    ///
+    /// Used by [`crate::executor::TaskExecutor`] implementations to recover the
+    /// concrete task configuration. For example, a `RigCompletionExecutor` calls
+    /// `task_as_any().downcast_ref::<CompletionTask>()` to read the model name.
+    fn task_as_any(&self) -> &dyn Any;
+
     /// Downcast to `&dyn Any` for inspection or scaffold use.
+    ///
+    /// Returns the wrapper (`ErasedTask<T>` or `ErasedIoTask<T>`). For access to
+    /// the inner task struct, use [`DynTask::task_as_any`] instead.
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -145,6 +168,10 @@ where
         })
     }
 
+    fn task_as_any(&self) -> &dyn Any {
+        self.inner.as_ref()
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -160,6 +187,104 @@ where
     T::Error: std::error::Error + Send + Sync + 'static,
 {
     Arc::new(ErasedTask::new(task))
+}
+
+// ─── IoTask ───────────────────────────────────────────────────────────────────
+
+/// Marker trait for tasks that require an external executor.
+///
+/// I/O tasks carry only configuration (model name, endpoint URL, etc.).
+/// They do **not** implement [`crate::Task::run`]. Instead, a
+/// [`crate::executor::TaskExecutor`] registered with the runtime handles
+/// execution.
+///
+/// Use [`erase_io`] to wrap an `IoTask` into a [`SharedDynTask`].
+///
+/// # Example
+///
+/// ```no_run
+/// use nanites_core::dyn_task::{IoTask, erase_io};
+///
+/// #[derive(Debug, Clone)]
+/// struct FetchUrl { url: String }
+///
+/// impl IoTask for FetchUrl {
+///     type Input = ();
+///     type Output = String;
+/// }
+/// ```
+pub trait IoTask: Send + Sync + fmt::Debug + Clone + 'static {
+    /// The input value this task consumes.
+    type Input: Send + 'static;
+    /// The value produced on success.
+    type Output: Send + 'static;
+}
+
+/// Concrete wrapper that erases an [`IoTask`] into a [`DynTask`].
+///
+/// Analogous to [`ErasedTask`] for pure tasks. `run_erased` returns
+/// [`RuntimeError::NoExecutor`]; the runtime dispatches to the registered
+/// [`crate::executor::TaskExecutor`] instead.
+pub struct ErasedIoTask<T> {
+    inner: Arc<T>,
+}
+
+impl<T: IoTask> ErasedIoTask<T> {
+    /// Wrap an I/O task.
+    pub fn new(task: T) -> Self {
+        Self {
+            inner: Arc::new(task),
+        }
+    }
+}
+
+impl<T: IoTask + fmt::Debug> fmt::Debug for ErasedIoTask<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ErasedIoTask({})", std::any::type_name::<T>())
+    }
+}
+
+impl<T: IoTask> DynTask for ErasedIoTask<T> {
+    fn type_name(&self) -> &'static str {
+        std::any::type_name::<T>()
+    }
+
+    fn task_types(&self) -> TaskTypes {
+        TaskTypes {
+            input: std::any::TypeId::of::<T::Input>(),
+            output: std::any::TypeId::of::<T::Output>(),
+        }
+    }
+
+    fn run_erased<'a>(
+        &'a self,
+        _input: AnyInput,
+        _ctx: &'a Ctx,
+    ) -> Pin<Box<dyn futures::Future<Output = Result<DynResult, RuntimeError>> + Send + 'a>> {
+        let name = std::any::type_name::<T>();
+        Box::pin(async move { Err(RuntimeError::NoExecutor(name)) })
+    }
+
+    fn clone_box(&self) -> Box<dyn DynTask> {
+        Box::new(ErasedIoTask {
+            inner: Arc::clone(&self.inner),
+        })
+    }
+
+    fn task_as_any(&self) -> &dyn Any {
+        self.inner.as_ref()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Wrap an [`IoTask`] as a [`SharedDynTask`].
+///
+/// Use this instead of [`erase`] for tasks that require an external executor.
+pub fn erase_io<T: IoTask>(task: T) -> SharedDynTask {
+    Arc::new(ErasedIoTask::new(task))
 }
 
 /// Downcast an [`AnyOutput`] to a concrete type.

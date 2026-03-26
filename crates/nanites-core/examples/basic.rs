@@ -1,5 +1,26 @@
 //! basic.rs — sanity check: a task that doubles a number.
 //!
+//! # Two execution paths
+//!
+//! **Pure tasks** (like `Double` below) implement `Task::run`. The runtime
+//! calls `run` directly — no registration needed. This is the right choice for
+//! self-contained computation that needs no external resources.
+//!
+//! **I/O tasks** implement `IoTask` (no `run` method) and carry only
+//! configuration (e.g. model name, endpoint URL). A `TaskExecutor` registered
+//! with the runtime handles their execution and owns the resource handles
+//! (HTTP clients, model objects, connection pools). This keeps the task struct
+//! serializable even when the resources it needs are not.
+//!
+//! ```no_run
+//! // Pure task — self-contained, no registration:
+//! // runtime.run(Double, 21i64).await
+//!
+//! // I/O task — register an executor first:
+//! // let runtime = Runtime::new().with_executor(MyHttpExecutor::new(client));
+//! // runtime.run_dyn(erase_io(FetchUrl { url: "..." }), Box::new(())).await
+//! ```
+//!
 //! Run with: cargo run --example basic
 
 use nanites_core::{Ctx, Runtime, Task};

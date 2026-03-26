@@ -6,6 +6,7 @@ license.workspace = true
 description = "LLM completion tasks via rig, integrated with the nanites-core Task substrate"
 
 [dependencies]
+futures = "0.3"
 nanites-core = { path = "../nanites-core" }
 rig-core = "0.33"
 serde = { version = "1", features = ["derive"] }
