@@ -43,6 +43,7 @@
 //! # }
 //! ```
 
+pub mod cache;
 pub mod cancellation;
 pub mod ctx;
 pub mod dyn_task;
@@ -56,9 +57,13 @@ pub mod runtime;
 pub mod scaffold;
 pub mod task;
 
+pub use cache::{MemoryCache, NoCache, TaskCache};
 pub use cancellation::CancellationToken;
 pub use ctx::Ctx;
-pub use dyn_task::{AnyInput, AnyOutput, DynTask, ErasedIoTask, ErasedTask, IoTask, SharedDynTask};
+pub use dyn_task::{
+    AnyInput, AnyOutput, DynTask, ErasedIoTask, ErasedTask, IoTask, SharedDynTask,
+    erase_serializable,
+};
 pub use error::{BoxError, RuntimeError};
 pub use exec_graph::{ExecGraph, ExecNode, TerminalState};
 pub use executor::TaskExecutor;

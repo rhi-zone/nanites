@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use crate::cache::TaskCache;
 use crate::cancellation::CancellationToken;
 use crate::dyn_task::{AnyInput, AnyOutput, SharedDynTask, downcast_output, erase};
 use crate::error::RuntimeError;
@@ -36,6 +37,8 @@ pub struct Ctx {
     scaffolds: Arc<Vec<Scaffold>>,
     /// Registered I/O task executors, keyed by task type name.
     executors: Arc<HashMap<&'static str, Arc<dyn TaskExecutor>>>,
+    /// Optional result cache. `None` means no caching (the default).
+    cache: Option<Arc<dyn TaskCache>>,
 }
 
 impl fmt::Debug for Ctx {
@@ -55,6 +58,7 @@ impl Ctx {
         cancel: CancellationToken,
         scaffolds: Arc<Vec<Scaffold>>,
         executors: Arc<HashMap<&'static str, Arc<dyn TaskExecutor>>>,
+        cache: Option<Arc<dyn TaskCache>>,
     ) -> Self {
         Ctx {
             frontier,
@@ -63,6 +67,7 @@ impl Ctx {
             node_id: None,
             scaffolds,
             executors,
+            cache,
         }
     }
 
@@ -75,6 +80,7 @@ impl Ctx {
             node_id: Some(node_id),
             scaffolds: Arc::clone(&self.scaffolds),
             executors: Arc::clone(&self.executors),
+            cache: self.cache.clone(),
         }
     }
 
@@ -210,12 +216,32 @@ impl Ctx {
         let executor: Option<Arc<dyn crate::executor::TaskExecutor>> =
             self.executors.get(task.type_name()).cloned();
 
+        // Try to build a cache key before consuming the input.
+        // This requires the task to expose serializable_info and hash_input_erased.
+        let cache = self.cache.clone();
+        let cache_key = cache.as_ref().and_then(|_| {
+            let (type_name, params) = task.serializable_info()?;
+            let input_hash = task.hash_input_erased(&input)?;
+            Some(crate::cache::CacheKey::new(type_name, params, input_hash))
+        });
+
         tokio::spawn(async move {
             if cancel.is_cancelled() {
                 frontier.set_cancelled(node_id);
                 frontier.remove_terminal(node_id);
                 exec_graph.set_cancelled(node_id);
                 on_done(Err(RuntimeError::Cancelled));
+                return;
+            }
+
+            // Cache hit: return cached output without executing.
+            if let (Some(cache_ref), Some(key)) = (&cache, &cache_key)
+                && let Some(cached_output) = cache_ref.get(key)
+            {
+                frontier.set_completed(node_id);
+                frontier.remove_terminal(node_id);
+                exec_graph.set_completed(node_id, output_type_name, None);
+                on_done(Ok(cached_output));
                 return;
             }
 
@@ -238,8 +264,41 @@ impl Ctx {
                 Ok(output) => {
                     frontier.set_completed(node_id);
                     frontier.remove_terminal(node_id);
-                    exec_graph.set_completed(node_id, output_type_name);
-                    on_done(Ok(output));
+
+                    // Cache successful output (best-effort).
+                    //
+                    // `make_cached_erased` consumes the output and wraps it in
+                    // a `CachedOutput`. We then clone the output back out of
+                    // the `CachedOutput` to hand to `on_done`. If wrapping
+                    // isn't possible (task not serializable / wrong type), we
+                    // skip caching and use the original output directly.
+                    let (output_to_return, stored_arc) =
+                        if let (Some(cache_ref), Some(key)) = (&cache, cache_key) {
+                            match task.make_cached_erased(output) {
+                                Some(cached) => {
+                                    let arc = cached.value.clone();
+                                    let output_clone = cached.clone_output();
+                                    cache_ref.insert(key, cached);
+                                    (output_clone, Some(arc))
+                                }
+                                None => {
+                                    // make_cached_erased returned None — the output was
+                                    // consumed but couldn't be wrapped (downcast failed,
+                                    // which shouldn't happen in practice). Produce an
+                                    // empty placeholder so we don't panic; the caller
+                                    // gets an error on downcast.
+                                    //
+                                    // In practice this path is unreachable when the
+                                    // erase_serializable closures are set up correctly.
+                                    (Box::new(()) as AnyOutput, None)
+                                }
+                            }
+                        } else {
+                            (output, None)
+                        };
+
+                    exec_graph.set_completed(node_id, output_type_name, stored_arc);
+                    on_done(Ok(output_to_return));
                 }
                 Err(e) => {
                     let msg = e.to_string();

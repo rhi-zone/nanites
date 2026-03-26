@@ -14,17 +14,26 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value as JsonValue;
 
+use std::any::Any;
+
 use crate::frontier::NodeId;
 
 // ─── TerminalState ────────────────────────────────────────────────────────────
 
 /// The resolved outcome of a task.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum TerminalState {
-    /// Task produced a value. Carries the Rust type name of the output type.
+    /// Task produced a value. Carries the Rust type name of the output type
+    /// and, optionally, the type-erased output value itself (for replay /
+    /// debugging via shared ownership). The output is `None` when caching is
+    /// disabled or the task's output type does not implement `Clone + Sync`.
     Completed {
         /// `std::any::type_name` of the output type.
         output_type: &'static str,
+        /// The type-erased output value behind a shared reference, if retained.
+        ///
+        /// Use [`TerminalState::downcast_output`] to recover the concrete type.
+        output: Option<Arc<dyn Any + Send + Sync>>,
     },
     /// Task returned an error.
     Failed {
@@ -33,6 +42,41 @@ pub enum TerminalState {
     },
     /// Task was cancelled before producing a value.
     Cancelled,
+}
+
+impl std::fmt::Debug for TerminalState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TerminalState::Completed {
+                output_type,
+                output,
+            } => f
+                .debug_struct("Completed")
+                .field("output_type", output_type)
+                .field("has_output", &output.is_some())
+                .finish(),
+            TerminalState::Failed { message } => {
+                f.debug_struct("Failed").field("message", message).finish()
+            }
+            TerminalState::Cancelled => write!(f, "Cancelled"),
+        }
+    }
+}
+
+impl TerminalState {
+    /// Attempt to downcast the stored output to a concrete type.
+    ///
+    /// Returns `None` if no output was retained or if the type doesn't match.
+    pub fn downcast_output<O: Any + Send + Sync>(&self) -> Option<&O> {
+        if let TerminalState::Completed {
+            output: Some(arc), ..
+        } = self
+        {
+            arc.downcast_ref::<O>()
+        } else {
+            None
+        }
+    }
 }
 
 // ─── ExecNode ─────────────────────────────────────────────────────────────────
@@ -112,10 +156,21 @@ impl ExecGraph {
     /// Mark a node as completed.
     ///
     /// `output_type` should be `std::any::type_name::<T::Output>()`.
-    pub fn set_completed(&self, id: NodeId, output_type: &'static str) {
+    /// `output` is an optional shared reference to the output value — pass
+    /// `Some(arc)` to retain the output for replay or debugging, or `None`
+    /// to record only the type name.
+    pub fn set_completed(
+        &self,
+        id: NodeId,
+        output_type: &'static str,
+        output: Option<Arc<dyn Any + Send + Sync>>,
+    ) {
         let mut inner = self.inner.lock().unwrap();
         if let Some(node) = inner.nodes.get_mut(&id) {
-            node.terminal = Some(TerminalState::Completed { output_type });
+            node.terminal = Some(TerminalState::Completed {
+                output_type,
+                output,
+            });
         }
     }
 
@@ -223,7 +278,7 @@ mod tests {
         graph.record_spawn(0, "MyTask", None, None);
         graph.record_spawn(1, "ChildTask", None, Some(0));
 
-        graph.set_completed(0, "String");
+        graph.set_completed(0, "String", None);
         graph.set_failed(1, "something went wrong");
 
         let root = graph.get(0).unwrap();
@@ -231,7 +286,8 @@ mod tests {
         assert!(matches!(
             root.terminal,
             Some(TerminalState::Completed {
-                output_type: "String"
+                output_type: "String",
+                output: None,
             })
         ));
 
@@ -260,7 +316,7 @@ mod tests {
         let graph = ExecGraph::new();
         graph.record_spawn(0, "A", None, None);
         graph.record_spawn(1, "B", None, None);
-        graph.set_completed(0, "()");
+        graph.set_completed(0, "()", None);
 
         let running = graph.running_nodes();
         assert_eq!(running.len(), 1);

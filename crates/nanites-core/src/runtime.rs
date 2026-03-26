@@ -33,6 +33,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use crate::cache::TaskCache;
 use crate::cancellation::CancellationToken;
 use crate::ctx::Ctx;
 use crate::dyn_task::{AnyInput, AnyOutput, SharedDynTask};
@@ -50,7 +51,7 @@ type ExecutorMap = Arc<HashMap<&'static str, Arc<dyn TaskExecutor>>>;
 /// The nanites runtime.
 ///
 /// Cheap to clone — all clones share the same frontier, execution graph,
-/// cancel token, scaffold list, and executor map.
+/// cancel token, scaffold list, executor map, and optional cache.
 #[derive(Clone)]
 pub struct Runtime {
     frontier: FrontierHandle,
@@ -58,6 +59,8 @@ pub struct Runtime {
     cancel: CancellationToken,
     scaffolds: Arc<Vec<Scaffold>>,
     executors: ExecutorMap,
+    /// Optional result cache. `None` means no caching (the default).
+    cache: Option<Arc<dyn TaskCache>>,
 }
 
 impl fmt::Debug for Runtime {
@@ -78,7 +81,8 @@ impl Default for Runtime {
 }
 
 impl Runtime {
-    /// Create a runtime with no scaffolds, no executors, and a fresh cancellation token.
+    /// Create a runtime with no scaffolds, no executors, no cache, and a fresh
+    /// cancellation token.
     pub fn new() -> Self {
         Runtime {
             frontier: FrontierHandle::new(Frontier::new()),
@@ -86,7 +90,20 @@ impl Runtime {
             cancel: CancellationToken::new(),
             scaffolds: Arc::new(Vec::new()),
             executors: Arc::new(HashMap::new()),
+            cache: None,
         }
+    }
+
+    /// Attach a result cache to this runtime.
+    ///
+    /// Tasks wrapped with [`crate::dyn_task::erase_serializable`] will check
+    /// the cache before executing and store successful outputs after executing.
+    ///
+    /// Returns `self` for method chaining.
+    #[must_use]
+    pub fn with_cache(mut self, cache: Arc<dyn TaskCache>) -> Self {
+        self.cache = Some(cache);
+        self
     }
 
     /// Add a global scaffold (applied to every spawned task, in order).
@@ -195,6 +212,7 @@ impl Runtime {
             self.cancel.clone(),
             Arc::clone(&self.scaffolds),
             Arc::clone(&self.executors),
+            self.cache.clone(),
         )
     }
 }
