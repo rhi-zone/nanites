@@ -112,6 +112,12 @@ The progressive UI rendering case (show tokens as they arrive) is a side channel
 
 If shared code ever makes sense, it should be a third crate that both depend on, not either depending on the other.
 
+### Error bound is `Into<BoxError>`, not `std::error::Error`
+
+**Decision:** Task error bounds use `T::Error: Into<BoxError>` rather than `T::Error: std::error::Error + Send + Sync + 'static`.
+
+**Why:** `BoxError` (`Box<dyn Error + Send + Sync>`) doesn't satisfy `std::error::Error` because `dyn Error` is unsized. This meant any task using `BoxError` as its error type couldn't be erased or spawned. `Into<BoxError>` accepts both: concrete error types (via blanket `From` impl) and `BoxError` itself (via identity).
+
 ---
 
 ## What nanites is NOT
