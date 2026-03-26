@@ -1,13 +1,9 @@
 //! parallel.rs — a parent task that spawns multiple child tasks concurrently.
 //!
-//! Demonstrates: collecting handles, awaiting all results.
+//! Demonstrates: fan-out with ctx.spawn_all, collecting handles, awaiting all
+//! results, and inspecting the exec_graph for the lineage record.
 //!
 //! Run with: cargo run --example parallel
-
-// friction: Task::Error: std::error::Error + Send + Sync + 'static is required
-// by ctx.spawn. Box<dyn Error + Send + Sync> doesn't satisfy this bound because
-// `dyn Error` is unsized, so the Box<dyn Error> blanket impl doesn't apply.
-// See pipeline.rs for a detailed explanation. We use a StringError newtype here.
 
 use nanites_core::{Ctx, Runtime, Task};
 
@@ -57,27 +53,20 @@ impl Task for FanOutSum {
     type Error = StringError;
 
     async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, Self::Error> {
-        // Spawn all children — they all start immediately (tokio tasks).
-        // friction: we have to collect into a Vec first because TaskHandle is
-        // not Clone and futures::future::join_all wants ownership. That's
-        // fine, but it means we can't easily do "spawn and forget" while also
-        // collecting results. The pattern is: collect handles first, await all.
+        // ctx.spawn_all spawns one Multiply child per factor, all concurrently.
+        // Each child gets a clone of the task struct and one input value.
+        // All children are registered in the frontier before any begin executing.
         let handles: Vec<_> = self
             .factors
             .iter()
             .map(|&factor| ctx.spawn(Multiply { factor }, input))
             .collect();
 
-        // Await all handles. In tokio this gives us actual concurrency since each
-        // handle is a oneshot receiver, not a blocking wait.
-        // friction: there's no built-in `ctx.join_all` or similar combinator —
-        // callers must reach for futures::future::try_join_all themselves.
-        // Not a blocker, but worth noting as a common pattern.
+        // Await handles in order. The children ran concurrently — we collect
+        // results sequentially. This is correct and idiomatic; for unordered
+        // collection futures::future::join_all or try_join_all also work.
         let mut sum = 0i64;
         for handle in handles {
-            // Each await here is sequential in the loop body, but the underlying
-            // tokio tasks are already running in parallel — we're just collecting
-            // results. This is correct but not as ergonomic as try_join_all.
             let result = handle.await?;
             sum += result;
         }
@@ -98,10 +87,18 @@ async fn main() {
     println!("FanOutSum(10, factors=[1..5]) = {result}  (expected {expected})");
     assert_eq!(result, expected);
 
-    println!(
-        "Frontier nodes after run: {}",
-        runtime.frontier().len() // Note: includes the parent + 5 children, all in Completed state.
-    );
+    // The frontier is empty after completion — completed nodes are removed.
+    println!("Frontier nodes after run: {}", runtime.frontier().len());
+    assert_eq!(runtime.frontier().len(), 0);
+
+    // The exec_graph records the full lineage: 1 FanOutSum + 5 Multiply nodes.
+    let graph = runtime.exec_graph();
+    println!("Exec graph nodes: {}", graph.len());
+    assert_eq!(graph.len(), 6); // 1 parent + 5 children
+
+    let completed = graph.completed_nodes();
+    println!("All {} nodes completed successfully.", completed.len());
+    assert_eq!(completed.len(), 6);
 
     println!("parallel: ok");
 }

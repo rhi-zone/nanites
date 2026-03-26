@@ -1,7 +1,12 @@
 //! scaffold.rs — a scaffold that logs task names before they run.
 //!
-//! Also demonstrates a type-matching scaffold: inspects the incoming task's
-//! type_name and replaces it with a wrapped version for a specific type.
+//! A scaffold is a `Fn(&dyn DynTask) -> SharedDynTask` applied to every task
+//! before it is spawned. Common uses: inject a different model for specific
+//! task types, wrap tasks with logging/tracing, swap implementations for tests.
+//!
+//! This example shows the simplest scaffold pattern: inspect the task type name
+//! and return the task unchanged (identity). The exec_graph records all spawned
+//! tasks; the scaffold fires before the graph entry is written.
 //!
 //! Run with: cargo run --example scaffold
 
@@ -25,18 +30,6 @@ impl Task for Greet {
     }
 }
 
-/// A "wrapper" task that delegates to an inner DynTask but logs around it.
-///
-/// friction: wrapping a DynTask to add behaviour around it is awkward.
-/// There's no `WrapTask` abstraction — you have to implement DynTask directly,
-/// which requires boxing futures, dealing with AnyInput/AnyOutput, and
-/// reimplementing clone_box. This is the main rough edge of the scaffold story:
-/// the identity scaffold (just inspect + return) is easy, but actually wrapping
-/// execution requires dropping down to DynTask manually.
-///
-/// For now we demonstrate the simpler case: a logging scaffold that records
-/// which task types were spawned without wrapping their execution.
-
 #[tokio::main]
 async fn main() {
     // Collect task type names seen by the scaffold.
@@ -44,23 +37,22 @@ async fn main() {
 
     let seen_clone = Arc::clone(&seen);
     let logging_scaffold = Scaffold::new(move |task: &dyn DynTask| -> SharedDynTask {
-        // Log the task type name before it runs.
+        // The scaffold fires before the task is handed to tokio. Record the type.
         seen_clone
             .lock()
             .unwrap()
             .push(task.type_name().to_string());
         eprintln!("[scaffold] spawning: {}", task.type_name());
-        // Return the task unchanged — identity.
-        // friction: `Arc::from(task.clone_box())` is the only way to do this.
-        // There's no `task.into_shared()` or similar shorthand on SharedDynTask.
-        // The pattern is a bit surprising to discover: you have to know that
-        // SharedDynTask = Arc<dyn DynTask> and that clone_box() gives you a Box.
+        // Return the task unchanged — identity scaffold.
+        // SharedDynTask = Arc<dyn DynTask>; clone_box() gives a Box, Arc::from
+        // converts it. There is no shorthand on DynTask itself.
         Arc::from(task.clone_box())
     });
 
+    // Register the scaffold with the runtime using the builder pattern.
     let runtime = Runtime::new().with_scaffold(logging_scaffold);
 
-    // Spawn a couple of tasks. The scaffold fires for each.
+    // Spawn a couple of tasks. The scaffold fires once per spawn.
     let h1 = runtime.spawn(
         Greet {
             name: "Alice".to_string(),
@@ -85,6 +77,13 @@ async fn main() {
         println!("  {name}");
     }
     assert_eq!(seen.len(), 2);
+
+    // The exec_graph is the authoritative audit log — all spawned tasks, even
+    // after completion. It is separate from the frontier, which is empty now.
+    assert_eq!(runtime.frontier().len(), 0);
+    let graph_nodes = runtime.exec_graph().snapshot();
+    println!("Exec graph nodes: {}", graph_nodes.len());
+    assert_eq!(graph_nodes.len(), 2);
 
     println!("scaffold: ok");
 }

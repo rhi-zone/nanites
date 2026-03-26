@@ -9,11 +9,6 @@
 //!
 //! Run with: cargo run --example decompose
 
-// friction: Task::Error: std::error::Error + Send + Sync + 'static is required
-// by ctx.spawn. Box<dyn Error + Send + Sync> doesn't satisfy this bound because
-// `dyn Error` is unsized, so the Box<dyn Error> blanket impl doesn't apply.
-// See pipeline.rs for a detailed explanation.
-
 use nanites_core::{Ctx, Runtime, Task};
 
 #[derive(Debug)]
@@ -61,21 +56,14 @@ impl Task for ProcessBatch {
     type Error = StringError;
 
     async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, Self::Error> {
-        // Decompose: one subtask per line.
-        // All subtasks are spawned immediately and run concurrently.
-        //
-        // friction: to preserve order, we spawn into a Vec<TaskHandle<String>>
-        // and then await in order. This is idiomatic Rust (same as with JoinSet)
-        // but there's no `ctx.spawn_all(iter)` shorthand. Minor ergonomics gap.
-        let handles: Vec<_> = input
-            .into_iter()
-            .map(|line| ctx.spawn(ProcessLine, line))
-            .collect();
+        // ctx.spawn_all fans out over a collection of inputs, spawning one
+        // child task per item. All children are registered in the frontier
+        // before any of them begin executing.
+        let handles = ctx.spawn_all(ProcessLine, input);
 
-        // friction: handle.await returns Result<String, RuntimeError>. The `?`
-        // converts RuntimeError → StringError via the From impl above. A caller
-        // who needs to distinguish task logic errors from runtime errors
-        // (Cancelled, InputTypeMismatch, etc.) must match before using `?`.
+        // Await handles in order to preserve input ordering in the output.
+        // The underlying tokio tasks ran concurrently — we are just collecting
+        // results sequentially here.
         let mut results = Vec::with_capacity(handles.len());
         for handle in handles {
             results.push(handle.await?);
@@ -107,14 +95,28 @@ async fn main() {
     assert_eq!(results[1], "FOO BAR");
     assert_eq!(results[2], "THE QUICK BROWN FOX");
 
-    // The frontier now has 1 (ProcessBatch) + n (ProcessLine) nodes.
-    // friction: no way to query "only children of node X" from outside the
-    // runtime without iterating the full snapshot and filtering by parent.
-    // TaskNode carries parent/children ids but Frontier has no get_children(id).
+    // The frontier tracks only pending tasks and is empty after completion.
+    // Use exec_graph for the full lineage audit: 1 ProcessBatch + n ProcessLine.
+    let graph_nodes = runtime.exec_graph().snapshot();
     println!(
-        "Frontier nodes: {} (1 parent + {n} children)",
-        runtime.frontier().len()
+        "Exec graph nodes: {} (1 parent + {n} children)",
+        graph_nodes.len()
     );
+    assert_eq!(graph_nodes.len(), n + 1);
+
+    // exec_graph.get_children(id) lets you query parent→child relationships
+    // directly without scanning the full snapshot.
+    let parent_node = graph_nodes
+        .iter()
+        .find(|n| n.parent.is_none())
+        .expect("root node");
+    let children = runtime.exec_graph().get_children(parent_node.id);
+    println!(
+        "Root node {} spawned {} children",
+        parent_node.task_type,
+        children.len()
+    );
+    assert_eq!(children.len(), n);
 
     // Demonstrate with a larger dynamic batch to stress the fan-out.
     let large_batch: Vec<String> = (0..20).map(|i| format!("item {i}")).collect();

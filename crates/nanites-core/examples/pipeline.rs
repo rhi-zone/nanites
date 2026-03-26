@@ -4,23 +4,20 @@
 //! task A, passes it along to task B (which awaits it), creating a
 //! happens-before relationship at runtime.
 //!
+//! The exec_graph records the full lineage — use it (not the frontier) for
+//! auditing after a run, since the frontier only tracks pending tasks and is
+//! empty once all tasks complete.
+//!
 //! Run with: cargo run --example pipeline
 
-// friction: Task::Error must satisfy `std::error::Error + Send + Sync + 'static`
-// (required by ctx.spawn). That means `Box<dyn Error + Send + Sync>` doesn't
-// work directly as T::Error — `dyn Error` is unsized and `Box<dyn Error>` only
-// implements Error via a blanket impl that requires `Box<E: Error>`. The bound
-// `T::Error: Error` fails for the boxed-dyn form because the *trait object
-// itself* isn't Sized. This rules out the idiomatic "just use anyhow::Error"
-// approach. Callers who want open-ended error composition need a concrete
-// wrapper type. A newtype around String is the simplest escape hatch.
+// Task::Error must satisfy `std::error::Error + Send + Sync + 'static`
+// (required by ctx.spawn). `Box<dyn Error + Send + Sync>` doesn't work
+// directly as T::Error — the blanket impl doesn't apply to unsized dyn types.
+// A concrete newtype around String is the simplest escape hatch.
 
-use nanites_core::{Ctx, Runtime, Task};
+use nanites_core::{Ctx, Runtime, Task, exec_graph::TerminalState};
 
 /// Minimal concrete error type for tasks that produce string error messages.
-/// friction: every example that needs a fallible task has to define or import
-/// one of these. A `nanites_core::StringError` (or re-export of a common type)
-/// would reduce boilerplate considerably.
 #[derive(Debug)]
 struct StringError(String);
 
@@ -93,9 +90,9 @@ impl Task for AppendSuffix {
 
 /// Orchestrator that wires the three stages together.
 ///
-/// This is the interesting part: each stage spawns the next, passing the
-/// previous result. The frontier records the dependency chain automatically
-/// because each spawn happens inside a running task.
+/// Each stage spawns the next and passes the previous result. The exec_graph
+/// records the dependency chain automatically because each spawn happens inside
+/// a running task.
 #[derive(Debug, Clone)]
 struct Pipeline {
     pad_width: usize,
@@ -109,10 +106,6 @@ impl Task for Pipeline {
 
     async fn run(&self, input: Self::Input, ctx: &Ctx) -> Result<Self::Output, Self::Error> {
         // Stage 1: parse
-        // friction: the input has to be moved into spawn here — we can't
-        // re-use it for anything else after this point. That's expected
-        // (single ownership) but it means if you want to log the raw input
-        // you have to clone before spawning. Minor but appears repeatedly.
         let parsed = ctx.spawn(ParseInt, input).await?;
 
         // Stage 2: format
@@ -126,10 +119,6 @@ impl Task for Pipeline {
             .await?;
 
         // Stage 3: append suffix
-        // friction: we have to clone `self.suffix` here to move it into the
-        // AppendSuffix struct. The task config fields are cloned at construction
-        // of the child task, which is expected, but it becomes slightly verbose
-        // when the orchestrator owns configuration that multiple children need.
         let result = ctx
             .spawn(
                 AppendSuffix {
@@ -161,18 +150,37 @@ async fn main() {
     println!("Pipeline(\"42\") = {result:?}");
     assert_eq!(result, "00000042_done");
 
-    // The frontier captures the full chain: Pipeline → ParseInt → FormatPadded → AppendSuffix.
-    // Parent-child relationships are recorded automatically.
-    let nodes = runtime.frontier().snapshot();
-    println!("Frontier ({} nodes):", nodes.len());
+    // The frontier tracks only *pending* tasks — it is empty after the run.
+    // Use exec_graph() for the full lineage audit.
+    assert_eq!(runtime.frontier().len(), 0);
+
+    // exec_graph captures the full chain: Pipeline → ParseInt → FormatPadded → AppendSuffix.
+    // Parent–child relationships are recorded automatically by the runtime.
+    let mut nodes = runtime.exec_graph().snapshot();
+    // Sort by id for deterministic output.
+    nodes.sort_by_key(|n| n.id);
+
+    println!("Exec graph ({} nodes):", nodes.len());
     for node in &nodes {
         println!(
-            "  [{:?}] {} (parent={:?})",
-            node.status,
-            node.task.type_name(),
+            "  [{}] {} (parent={:?}, terminal={:?})",
+            node.id,
+            node.task_type,
             node.parent,
+            node.terminal
+                .as_ref()
+                .map(|t| matches!(t, TerminalState::Completed { .. }))
+                .map(|ok| if ok { "Completed" } else { "other" })
+                .unwrap_or("None"),
         );
     }
+
+    assert_eq!(nodes.len(), 4); // Pipeline + 3 stages
+    assert!(
+        nodes
+            .iter()
+            .all(|n| matches!(n.terminal, Some(TerminalState::Completed { .. })))
+    );
 
     println!("pipeline: ok");
 }
