@@ -45,6 +45,7 @@
 
 pub mod cache;
 pub mod cancellation;
+pub mod combinators;
 pub mod ctx;
 pub mod dyn_task;
 pub mod error;
@@ -73,3 +74,5 @@ pub use registry::{RegistryError, SerializableTask, TaskRegistry, TaskSnapshot};
 pub use runtime::Runtime;
 pub use scaffold::Scaffold;
 pub use task::Task;
+
+pub use combinators::{Map, Refine, Refineable, RefinementStep, Retry};
