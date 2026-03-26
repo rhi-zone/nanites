@@ -9,6 +9,7 @@ description = "LLM completion tasks via rig, integrated with the nanites-core Ta
 futures = "0.3"
 nanites-core = { path = "../nanites-core" }
 rig-core = "0.33"
+schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

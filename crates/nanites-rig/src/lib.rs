@@ -2,13 +2,17 @@
 //!
 //! # Design
 //!
-//! [`CompletionTask`] and [`ChatTask`] are **pure data structs** — they carry
-//! configuration (model name, optional system prompt) but no resource handles.
-//! They implement [`IoTask`], not [`Task::run`], because executing them requires
-//! an LLM model client that cannot live inside a serializable struct.
+//! [`CompletionTask`], [`ChatTask`], and [`StructuredCompletionTask`] are
+//! **pure data structs** — they carry configuration (model name, optional
+//! system prompt) but no resource handles. They implement [`IoTask`], not
+//! [`Task::run`], because executing them requires an LLM model client that
+//! cannot live inside a serializable struct.
 //!
-//! To run them, register a [`RigCompletionExecutor`] (or [`RigChatExecutor`])
-//! with the runtime:
+//! To run them, register the appropriate executor with the runtime:
+//!
+//! - [`RigCompletionExecutor`] for [`CompletionTask`] (plain text output)
+//! - [`RigChatExecutor`] for [`ChatTask`] (multi-turn, plain text output)
+//! - [`RigStructuredExecutor<T>`] for [`StructuredCompletionTask<T>`] (typed JSON output)
 //!
 //! ```no_run
 //! use nanites_core::Runtime;
@@ -29,6 +33,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -37,7 +42,10 @@ use nanites_core::dyn_task::{AnyInput, AnyOutput, IoTask};
 use nanites_core::error::BoxError;
 use nanites_core::executor::TaskExecutor;
 use nanites_core::{Ctx, TaskRegistry};
-use rig::completion::CompletionModel;
+use rig::agent::AgentBuilder;
+use rig::completion::{CompletionModel, TypedPrompt};
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -52,6 +60,10 @@ pub enum RigTaskError {
     /// The rig completion API returned an error.
     #[error("completion error: {0}")]
     Completion(#[from] rig::completion::CompletionError),
+
+    /// The structured output prompt failed.
+    #[error("structured output error: {0}")]
+    StructuredOutput(#[from] rig::completion::StructuredOutputError),
 }
 
 // ─── CompletionTask ───────────────────────────────────────────────────────────
@@ -382,6 +394,292 @@ pub fn register_all(registry: &mut TaskRegistry) {
             .map_err(|e| nanites_core::RegistryError::DeserializationFailed(e.to_string()))?;
         Ok(erase_io(task))
     });
+}
+
+// ─── StructuredCompletionTask ─────────────────────────────────────────────────
+
+/// A serializable task that requests a **typed, structured** LLM completion.
+///
+/// Like [`CompletionTask`], this is a pure data struct — it carries the model
+/// name and an optional system prompt. Execution is delegated to a
+/// [`RigStructuredExecutor<T>`] registered with the runtime.
+///
+/// The type parameter `T` is the output schema. It is not stored in the struct
+/// (hence `#[serde(skip)]` on the phantom field); it only exists to fix the
+/// executor's `IoTask::Output` associated type.
+///
+/// Input: `String` (the user prompt).
+/// Output: `T` (deserialized from the model's structured JSON response).
+///
+/// # Example
+///
+/// ```no_run
+/// use schemars::JsonSchema;
+/// use serde::{Deserialize, Serialize};
+/// use nanites_rig::StructuredCompletionTask;
+///
+/// #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+/// struct Sentiment { label: String, score: f64 }
+///
+/// let task: StructuredCompletionTask<Sentiment> = StructuredCompletionTask {
+///     model: "gpt-4o".into(),
+///     system: Some("Classify the sentiment.".into()),
+///     _phantom: std::marker::PhantomData,
+/// };
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StructuredCompletionTask<T> {
+    /// Model identifier (e.g. `"gpt-4o"`, `"claude-3-5-haiku"`).
+    pub model: String,
+    /// Optional system / preamble prompt.
+    pub system: Option<String>,
+    /// Phantom marker for the output type `T`.
+    #[serde(skip)]
+    pub _phantom: PhantomData<T>,
+}
+
+impl<T> IoTask for StructuredCompletionTask<T>
+where
+    T: std::fmt::Debug + Clone + Send + Sync + 'static,
+{
+    type Input = String;
+    type Output = T;
+}
+
+impl<T: std::fmt::Debug + Clone + Send + Sync + 'static> SerializableTask
+    for StructuredCompletionTask<T>
+{
+    fn serializable_type_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
+    fn params(&self) -> serde_json::Value {
+        serde_json::json!({
+            "model": self.model,
+            "system": self.system,
+        })
+    }
+}
+
+// ─── RigStructuredExecutor ────────────────────────────────────────────────────
+
+/// Executor for [`StructuredCompletionTask<T>`].
+///
+/// Holds a map of model name → model instance. On execution it builds a
+/// transient [`rig::agent::Agent`] from the stored model, then calls
+/// `prompt_typed::<T>` to obtain a structured response from the LLM.
+///
+/// The type parameter `T` must match the `T` in the task type. Register one
+/// executor per output type.
+///
+/// # Example
+///
+/// ```no_run
+/// use schemars::JsonSchema;
+/// use serde::{Deserialize, Serialize};
+/// use nanites_rig::{RigStructuredExecutor, StructuredCompletionTask};
+///
+/// #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+/// struct Sentiment { label: String, score: f64 }
+///
+/// // let openai = rig::providers::openai::Client::from_env();
+/// // let model = openai.completion_model("gpt-4o");
+/// // let executor = RigStructuredExecutor::<Sentiment>::new().with_model("gpt-4o", model);
+/// ```
+pub struct RigStructuredExecutor<T> {
+    models: HashMap<String, Arc<dyn ErasedStructuredModel<T>>>,
+}
+
+impl<T> RigStructuredExecutor<T>
+where
+    T: DeserializeOwned + JsonSchema + std::fmt::Debug + Clone + Send + Sync + 'static,
+{
+    /// Create an executor with no models registered.
+    pub fn new() -> Self {
+        Self {
+            models: HashMap::new(),
+        }
+    }
+
+    /// Register a model under the given name.
+    pub fn with_model<M>(mut self, name: impl Into<String>, model: M) -> Self
+    where
+        M: CompletionModel + Send + Sync + 'static,
+    {
+        self.models.insert(
+            name.into(),
+            Arc::new(TypedStructuredModel(model, PhantomData)),
+        );
+        self
+    }
+
+    /// Register a model in place.
+    pub fn register_model<M>(&mut self, name: impl Into<String>, model: M)
+    where
+        M: CompletionModel + Send + Sync + 'static,
+    {
+        self.models.insert(
+            name.into(),
+            Arc::new(TypedStructuredModel(model, PhantomData)),
+        );
+    }
+}
+
+impl<T> Default for RigStructuredExecutor<T>
+where
+    T: DeserializeOwned + JsonSchema + std::fmt::Debug + Clone + Send + Sync + 'static,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> TaskExecutor for RigStructuredExecutor<T>
+where
+    T: DeserializeOwned + JsonSchema + std::fmt::Debug + Clone + Send + Sync + 'static,
+{
+    fn task_type_name(&self) -> &'static str {
+        std::any::type_name::<StructuredCompletionTask<T>>()
+    }
+
+    fn execute_erased<'a>(
+        &'a self,
+        task_data: &'a dyn Any,
+        input: AnyInput,
+        _ctx: &'a Ctx,
+    ) -> Pin<Box<dyn futures::Future<Output = Result<AnyOutput, BoxError>> + Send + 'a>> {
+        let task = match task_data.downcast_ref::<StructuredCompletionTask<T>>() {
+            Some(t) => t,
+            None => {
+                return Box::pin(async move {
+                    Err(Box::new(RigTaskError::ModelNotFound(
+                        "task_data is not a StructuredCompletionTask".into(),
+                    )) as BoxError)
+                });
+            }
+        };
+
+        let prompt = match input.downcast::<String>() {
+            Ok(p) => *p,
+            Err(_) => {
+                return Box::pin(async move {
+                    Err(
+                        Box::new(RigTaskError::ModelNotFound("input is not a String".into()))
+                            as BoxError,
+                    )
+                });
+            }
+        };
+
+        let model = self.models.get(&task.model).cloned();
+        let model_name = task.model.clone();
+        let system = task.system.clone();
+
+        Box::pin(async move {
+            let model = model
+                .ok_or_else(|| Box::new(RigTaskError::ModelNotFound(model_name)) as BoxError)?;
+            let result = model.prompt_typed(system.as_deref(), prompt).await?;
+            Ok(Box::new(result) as AnyOutput)
+        })
+    }
+}
+
+// ─── Internal: type-erased structured model ───────────────────────────────────
+
+/// Object-safe trait for typed structured prompt execution.
+trait ErasedStructuredModel<T>: Send + Sync {
+    fn prompt_typed<'a>(
+        &'a self,
+        system: Option<&'a str>,
+        prompt: String,
+    ) -> Pin<Box<dyn futures::Future<Output = Result<T, BoxError>> + Send + 'a>>;
+}
+
+struct TypedStructuredModel<M, T>(M, PhantomData<T>);
+
+impl<M, T> ErasedStructuredModel<T> for TypedStructuredModel<M, T>
+where
+    M: CompletionModel + Send + Sync + 'static,
+    T: DeserializeOwned + JsonSchema + std::fmt::Debug + Clone + Send + Sync + 'static,
+{
+    fn prompt_typed<'a>(
+        &'a self,
+        system: Option<&'a str>,
+        prompt: String,
+    ) -> Pin<Box<dyn futures::Future<Output = Result<T, BoxError>> + Send + 'a>> {
+        // We need to clone the model reference to move it into the async block.
+        // AgentBuilder takes ownership of the model, so we wrap it in Arc and
+        // build a temporary agent on each call. The model is stored behind Arc
+        // in the map already, but ErasedStructuredModel takes &self; we clone
+        // via an inner Arc.
+        let model = self.0.clone();
+        let system = system.map(str::to_owned);
+        Box::pin(async move {
+            let mut builder = AgentBuilder::new(model);
+            if let Some(s) = system {
+                builder = builder.preamble(&s);
+            }
+            let agent = builder.build();
+            let result: T = agent
+                .prompt_typed(prompt)
+                .await
+                .map_err(|e| Box::new(RigTaskError::StructuredOutput(e)) as BoxError)?;
+            Ok(result)
+        })
+    }
+}
+
+// ─── register_structured ──────────────────────────────────────────────────────
+
+/// Register a [`RigStructuredExecutor<T>`] with a [`TaskRegistry`].
+///
+/// This records a factory so the registry can reconstruct
+/// [`StructuredCompletionTask<T>`] tasks from JSON snapshots. The executor
+/// must be registered separately with the runtime (via
+/// `runtime.register_executor(executor)`).
+///
+/// # Example
+///
+/// ```no_run
+/// use nanites_core::TaskRegistry;
+/// use nanites_rig::{RigStructuredExecutor, register_structured};
+/// use schemars::JsonSchema;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, Deserialize, Serialize, JsonSchema)]
+/// struct Sentiment { label: String, score: f64 }
+///
+/// let mut registry = TaskRegistry::new();
+/// // let executor = RigStructuredExecutor::<Sentiment>::new().with_model("gpt-4o", model);
+/// // register_structured::<Sentiment>(&mut registry, &executor);
+/// ```
+pub fn register_structured<T>(registry: &mut TaskRegistry, _executor: &RigStructuredExecutor<T>)
+where
+    T: DeserializeOwned + JsonSchema + std::fmt::Debug + Clone + Send + Sync + 'static,
+{
+    use nanites_core::dyn_task::erase_io;
+    registry.register_factory(
+        std::any::type_name::<StructuredCompletionTask<T>>(),
+        |params| {
+            let task: StructuredCompletionTask<T> = {
+                let model = params["model"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        nanites_core::RegistryError::DeserializationFailed(
+                            "missing 'model' field".into(),
+                        )
+                    })?
+                    .to_owned();
+                let system = params["system"].as_str().map(str::to_owned);
+                StructuredCompletionTask {
+                    model,
+                    system,
+                    _phantom: PhantomData,
+                }
+            };
+            Ok(erase_io(task))
+        },
+    );
 }
 
 // ─── Standalone helpers ────────────────────────────────────────────────────────
