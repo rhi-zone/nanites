@@ -44,31 +44,87 @@ Build a fully general software engineering agent that beats frontier tools (Clau
 
 ### Core Primitive
 
+Tasks are **pure data** — serializable structs that describe a unit of work. Execution is separate from description.
+
+```rust
+// Pure task: knows how to compute its output from its input
+#[derive(Serialize, Deserialize)]
+struct Double;
+
+impl Task for Double {
+    type Input = i64;
+    type Output = i64;
+    type Error = Infallible;
+    async fn run(&self, input: i64, ctx: &Ctx) -> Result<i64, Infallible> {
+        Ok(input * 2)
+    }
+}
+
+// I/O task: pure data, execution injected via TaskExecutor
+#[derive(Serialize, Deserialize)]
+struct CompletionTask { model: String, system: Option<String> }
+
+impl IoTask for CompletionTask {}  // marker only, no run()
 ```
-async Fn(I) -> Result<O, E>
+
+### Task vs IoTask
+
+- **`Task`** — implement `run()` for pure computation. Blanket `Execute` impl handles dispatch.
+- **`IoTask`** — pure data marker, no `run()`. Register a `TaskExecutor` on the Runtime that injects external resources (model clients, DB connections, etc.) at execution time.
+
+This keeps task structs as pure data throughout — no resource handles, no non-serializable fields.
+
+### Dynamic Graph via `ctx.spawn`
+
+Tasks compose by spawning subtasks through `Ctx`. The task graph is not declared upfront — it grows dynamically as tasks execute and discover their subtasks.
+
+```rust
+async fn run(&self, input: Problem, ctx: &Ctx) -> Result<Solution, Error> {
+    let a = ctx.spawn(StepA, input.part_a());  // TaskHandle<OutputA>
+    let b = ctx.spawn(StepB, a);               // depends on a's output
+    b.await
+}
 ```
 
-A nanite is a stateless function invocation. No accumulated context, no identity, no session. The orchestration program constructs the input, calls the function, receives the output. LLM calls, deterministic transforms, tool invocations — all just functions.
+- `ctx.spawn` records parent-child relationships automatically
+- `TaskHandle<O>` is a future — awaiting it creates a dependency edge
+- `ctx.spawn_all(task, inputs)` for fan-out parallelism
+- Type-erased `ctx.spawn_dyn` for runtime-constructed graphs
 
-### Execution Model
+### Frontier and Exec Graph
 
-- **Orchestration is a Rust program.** Control flow, decomposition, and state management are regular code.
-- **LLM as oracle.** The program calls the LLM when world knowledge is needed. The LLM decides; the program acts on the decision.
-- **Parallelism via async.** Independent calls run concurrently through tokio. No coordination protocol — just futures.
-- **Context construction is explicit.** Each LLM call receives exactly the context it needs, curated by the program. No growing conversation, no compression needed.
-- **Recursive decomposition.** Complex tasks decompose into subtasks until the leaves are trivially solvable — potentially without an LLM at all.
+Two separate structures with different lifecycles:
+
+- **`Frontier`** — pending tasks only. Manipulable: nodes can be inspected, pruned, reordered, or injected. Shrinks as tasks complete.
+- **`ExecGraph`** — monotonically growing lineage/audit record. Records every spawned task (type, params snapshot, parent, children, terminal state). Never shrinks.
+
+### Serialization
+
+Tasks implement `SerializableTask` (opt-in) with `type_name()` and `params() -> JsonValue`. A `TaskRegistry` maps type name strings to factory closures for reconstruction. Nesting works: a wrapper task serializes its inner task recursively.
+
+### Scaffolds
+
+`Scaffold` is `Fn(&DynTask) -> DynTask` — inspect a pending task and return it transformed (or unchanged, identity). Applied before every spawn. Used for logging, conditional prompt injection, task replacement.
+
+### Ctx
+
+Carries only: frontier handle, cancellation token, executor map. Nothing LLM-specific, nothing domain-specific.
 
 ### Crate Structure
 
-- **Library crates** — independently useful, composable functions. Parallel combinators, context construction, tool abstractions, structured output parsing.
-- **`nanites-rig`** — LLM calls via rig. One implementation of the function primitive. Swappable for any other LLM library.
-- **`nanites`** (binary) — the plugin host and orchestrator. Discovers plugins, composes them, presents a unified surface.
+- **`nanites-core`** — the substrate: Task, IoTask, TaskExecutor, Frontier, ExecGraph, Scaffold, TaskRegistry, Runtime, Ctx
+- **`nanites-rig`** — LLM tasks via rig: `CompletionTask`, `ChatTask` (IoTasks), `RigCompletionExecutor`, `RigChatExecutor`
+
+### Relationship to Unshape
+
+Same design patterns: registry-based type erasure, ops-as-serializable-structs, pluggable evaluators. Independent implementations with different execution models — unshape is a synchronous tight media loop (60fps), nanites is async I/O (seconds per call). Neither depends on the other.
 
 ### Stack
 
-- **Rust** — the orchestration language
-- **rig** — LLM completion primitives (behind `nanites-rig`)
-- **tokio** — async runtime for parallel execution
+- **Rust** — orchestration language
+- **tokio** — async runtime
+- **rig** — LLM completion (behind `nanites-rig`, swappable)
+- **serde/serde_json** — task serialization
 
 ## Development
 
