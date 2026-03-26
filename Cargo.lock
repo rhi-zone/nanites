@@ -853,7 +853,10 @@ dependencies = [
 name = "nanites-rig"
 version = "0.0.1"
 dependencies = [
+ "nanites-core",
  "rig-core",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 

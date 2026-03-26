@@ -3,8 +3,11 @@ name = "nanites-rig"
 version = "0.0.1"
 edition.workspace = true
 license.workspace = true
-description = "LLM completion functions via rig"
+description = "LLM completion tasks via rig, integrated with the nanites-core Task substrate"
 
 [dependencies]
+nanites-core = { path = "../nanites-core" }
 rig-core = "0.33"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
