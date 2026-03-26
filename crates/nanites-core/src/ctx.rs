@@ -204,10 +204,34 @@ impl Ctx {
         let frontier = self.frontier.inner().clone();
         let exec_graph = self.exec_graph.clone();
         let parent_id = self.node_id;
-        let node_id = frontier.register(task.clone(), parent_id);
+
+        // Serialize the input best-effort before it is consumed.
+        // Falls back to `Null` if the task is not serializable or serialization fails.
+        let serialized_input = task
+            .serialize_input_erased(&input)
+            .unwrap_or(serde_json::Value::Null);
+
+        // Capture params snapshot and stable type name from SerializableTask (if available).
+        let (serializable_type_name, params_snapshot) = match task.serializable_info() {
+            Some((stype, params)) => (Some(stype), Some(params)),
+            None => (None, None),
+        };
+
+        // Use the serializable type name when available; fall back to the Rust type name.
+        let recorded_type_name = serializable_type_name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| task.type_name().to_string());
+
+        let node_id = frontier.register(task.clone(), parent_id, serialized_input.clone());
 
         // Record in the execution graph before execution begins.
-        exec_graph.record_spawn(node_id, task.type_name(), None, parent_id);
+        exec_graph.record_spawn(
+            node_id,
+            recorded_type_name,
+            params_snapshot,
+            serialized_input,
+            parent_id,
+        );
 
         let cancel = self.cancel.clone();
         let child_ctx = self.child(node_id);
@@ -238,6 +262,10 @@ impl Ctx {
             if let (Some(cache_ref), Some(key)) = (&cache, &cache_key)
                 && let Some(cached_output) = cache_ref.get(key)
             {
+                // Serialize the cached output best-effort.
+                if let Some(json_out) = task.serialize_output_erased(&cached_output) {
+                    exec_graph.set_output(node_id, json_out);
+                }
                 frontier.set_completed(node_id);
                 frontier.remove_terminal(node_id);
                 exec_graph.set_completed(node_id, output_type_name, None);
@@ -262,8 +290,17 @@ impl Ctx {
 
             match outcome {
                 Ok(output) => {
+                    // Serialize the output best-effort before it is potentially
+                    // consumed by the cache path below.
+                    let serialized_output = task.serialize_output_erased(&output);
+
                     frontier.set_completed(node_id);
                     frontier.remove_terminal(node_id);
+
+                    // Store serialized output on the exec graph (best-effort).
+                    if let Some(json_out) = serialized_output {
+                        exec_graph.set_output(node_id, json_out);
+                    }
 
                     // Cache successful output (best-effort).
                     //

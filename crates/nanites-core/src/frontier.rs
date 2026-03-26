@@ -27,6 +27,12 @@ pub struct TaskNode {
     pub children: Vec<NodeId>,
     /// Current execution status.
     pub status: NodeStatus,
+    /// Serialized input at spawn time. `Null` if the input type is not
+    /// serializable or serialization failed.
+    pub input: serde_json::Value,
+    /// Serialized output, set when the node completes successfully. `None`
+    /// if the output type is not serializable or the node has not completed.
+    pub output: Option<serde_json::Value>,
 }
 
 impl fmt::Debug for TaskNode {
@@ -37,6 +43,7 @@ impl fmt::Debug for TaskNode {
             .field("parent", &self.parent)
             .field("children", &self.children)
             .field("status", &self.status)
+            .field("has_output", &self.output.is_some())
             .finish()
     }
 }
@@ -81,7 +88,15 @@ impl Frontier {
     ///
     /// The caller must supply the parent id (if any) — it is recorded on both
     /// the new node and the parent's `children` list.
-    pub fn register(&self, task: SharedDynTask, parent: Option<NodeId>) -> NodeId {
+    ///
+    /// `input` is the serialized input value at spawn time. Pass
+    /// `serde_json::Value::Null` if the input type is not serializable.
+    pub fn register(
+        &self,
+        task: SharedDynTask,
+        parent: Option<NodeId>,
+        input: serde_json::Value,
+    ) -> NodeId {
         let mut inner = self.inner.lock().unwrap();
         let id = inner.next_id;
         inner.next_id += 1;
@@ -92,6 +107,8 @@ impl Frontier {
             parent,
             children: Vec::new(),
             status: NodeStatus::Pending,
+            input,
+            output: None,
         };
         inner.nodes.insert(id, node);
 
@@ -118,6 +135,15 @@ impl Frontier {
         let mut inner = self.inner.lock().unwrap();
         if let Some(node) = inner.nodes.get_mut(&id) {
             node.status = NodeStatus::Completed;
+        }
+    }
+
+    /// Store the serialized output on a node (called just before marking it
+    /// completed). No-op if the node is not found.
+    pub fn set_output(&self, id: NodeId, output: serde_json::Value) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(node) = inner.nodes.get_mut(&id) {
+            node.output = Some(output);
         }
     }
 

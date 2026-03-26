@@ -45,6 +45,7 @@
 
 pub mod cache;
 pub mod cancellation;
+pub mod checkpoint;
 pub mod combinators;
 pub mod ctx;
 pub mod dyn_task;
@@ -60,6 +61,10 @@ pub mod task;
 
 pub use cache::{MemoryCache, NoCache, TaskCache};
 pub use cancellation::CancellationToken;
+pub use checkpoint::{
+    Checkpoint, ExecNodeSnapshot, FrontierNodeSnapshot, NodeStatusSnapshot, RestoreError,
+    TerminalStateSnapshot,
+};
 pub use ctx::Ctx;
 pub use dyn_task::{
     AnyInput, AnyOutput, DynTask, ErasedIoTask, ErasedTask, IoTask, SharedDynTask,

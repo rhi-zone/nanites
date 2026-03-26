@@ -106,6 +106,26 @@ pub trait DynTask: Send + Sync + fmt::Debug {
         None
     }
 
+    /// Serialize the type-erased input to a JSON value for checkpointing.
+    ///
+    /// Returns `Some(json)` when the task was wrapped with [`erase_serializable`]
+    /// and the input type implements `serde::Serialize`. Returns `None` otherwise.
+    ///
+    /// The input is not consumed; only a shared reference is taken.
+    fn serialize_input_erased(&self, _input: &AnyInput) -> Option<serde_json::Value> {
+        None
+    }
+
+    /// Serialize the type-erased output to a JSON value for checkpointing.
+    ///
+    /// Returns `Some(json)` when the task was wrapped with [`erase_serializable`]
+    /// and the output type implements `serde::Serialize`. Returns `None` otherwise.
+    ///
+    /// The output is not consumed; only a shared reference is taken.
+    fn serialize_output_erased(&self, _output: &AnyOutput) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Wrap a successful output into a [`crate::cache::CachedOutput`] for storage.
     ///
     /// Returns `Some(cached)` when the task was wrapped with [`erase_serializable`]
@@ -133,6 +153,18 @@ type ParamsFn = Arc<dyn Fn() -> (&'static str, serde_json::Value) + Send + Sync>
 /// or `None` if serialization is not possible.
 type InputHashFn = Arc<dyn Fn(&AnyInput) -> Option<u64> + Send + Sync>;
 
+/// Type alias for the optional input-serialization closure stored in [`ErasedTask`].
+///
+/// Receives a `&AnyInput`, tries to downcast and serialize to JSON, returns
+/// `Some(json)` or `None` if serialization is not possible.
+type SerializeInputFn = Arc<dyn Fn(&AnyInput) -> Option<serde_json::Value> + Send + Sync>;
+
+/// Type alias for the optional output-serialization closure stored in [`ErasedTask`].
+///
+/// Receives a `&AnyOutput`, tries to downcast and serialize to JSON, returns
+/// `Some(json)` or `None` if serialization is not possible.
+type SerializeOutputFn = Arc<dyn Fn(&AnyOutput) -> Option<serde_json::Value> + Send + Sync>;
+
 /// Type alias for the optional output-wrapping closure stored in [`ErasedTask`].
 ///
 /// Receives an `AnyOutput` and wraps it into a [`crate::cache::CachedOutput`]
@@ -156,6 +188,10 @@ pub struct ErasedTask<T> {
     params_fn: Option<ParamsFn>,
     /// Input-hashing closure, present when `T::Input: serde::Serialize`.
     input_hash_fn: Option<InputHashFn>,
+    /// Input-serialization closure, present when `T::Input: serde::Serialize`.
+    serialize_input_fn: Option<SerializeInputFn>,
+    /// Output-serialization closure, present when `T::Output: serde::Serialize`.
+    serialize_output_fn: Option<SerializeOutputFn>,
     /// Output-wrapping closure for the cache, present when
     /// `T::Output: Clone + Send + Sync`.
     make_cached_fn: Option<MakeCachedFn>,
@@ -168,6 +204,8 @@ impl<T: crate::task::Task + fmt::Debug + Clone> ErasedTask<T> {
             inner: Arc::new(task),
             params_fn: None,
             input_hash_fn: None,
+            serialize_input_fn: None,
+            serialize_output_fn: None,
             make_cached_fn: None,
         }
     }
@@ -229,6 +267,8 @@ where
             inner: Arc::clone(&self.inner),
             params_fn: self.params_fn.clone(),
             input_hash_fn: self.input_hash_fn.clone(),
+            serialize_input_fn: self.serialize_input_fn.clone(),
+            serialize_output_fn: self.serialize_output_fn.clone(),
             make_cached_fn: self.make_cached_fn.clone(),
         })
     }
@@ -249,6 +289,14 @@ where
         self.input_hash_fn.as_ref().and_then(|f| f(input))
     }
 
+    fn serialize_input_erased(&self, input: &AnyInput) -> Option<serde_json::Value> {
+        self.serialize_input_fn.as_ref().and_then(|f| f(input))
+    }
+
+    fn serialize_output_erased(&self, output: &AnyOutput) -> Option<serde_json::Value> {
+        self.serialize_output_fn.as_ref().and_then(|f| f(output))
+    }
+
     fn make_cached_erased(&self, output: AnyOutput) -> Option<crate::cache::CachedOutput> {
         self.make_cached_fn.as_ref().and_then(|f| f(output))
     }
@@ -267,14 +315,18 @@ where
 }
 
 /// Wrap a concrete task that also implements [`crate::registry::SerializableTask`]
-/// as a [`SharedDynTask`] with params extraction and input hashing enabled.
+/// as a [`SharedDynTask`] with params extraction, input hashing, and
+/// input/output serialization enabled.
 ///
 /// Tasks wrapped with this function will have their serializable info exposed
-/// via [`DynTask::serializable_info`], and their inputs hashed via
-/// [`DynTask::hash_input_erased`], enabling the runtime cache.
+/// via [`DynTask::serializable_info`], their inputs hashed via
+/// [`DynTask::hash_input_erased`] (enabling the runtime cache), and their
+/// inputs/outputs serialized via [`DynTask::serialize_input_erased`] /
+/// [`DynTask::serialize_output_erased`] (enabling checkpoint/restore).
 ///
-/// `T::Input` must implement `serde::Serialize` for input hashing to work.
-/// If serialization fails at runtime, caching is skipped for that invocation.
+/// `T::Input` and `T::Output` must implement `serde::Serialize`.
+/// If serialization fails at runtime, caching and checkpointing are skipped
+/// for that invocation (best-effort, no panic).
 pub fn erase_serializable<T>(task: T) -> SharedDynTask
 where
     T: crate::task::Task
@@ -285,7 +337,7 @@ where
         + Sync
         + 'static,
     T::Input: serde::Serialize,
-    T::Output: Clone + Send + Sync + 'static,
+    T::Output: serde::Serialize + Clone + Send + Sync + 'static,
     T::Error: std::error::Error + Send + Sync + 'static,
 {
     let inner = Arc::new(task);
@@ -299,6 +351,14 @@ where
         let typed = input.downcast_ref::<T::Input>()?;
         crate::cache::hash_input(typed)
     });
+    let serialize_input_fn: SerializeInputFn = Arc::new(|input: &AnyInput| {
+        let typed = input.downcast_ref::<T::Input>()?;
+        serde_json::to_value(typed).ok()
+    });
+    let serialize_output_fn: SerializeOutputFn = Arc::new(|output: &AnyOutput| {
+        let typed = output.downcast_ref::<T::Output>()?;
+        serde_json::to_value(typed).ok()
+    });
     let make_cached_fn: MakeCachedFn = Arc::new(|output: AnyOutput| {
         let typed = *output.downcast::<T::Output>().ok()?;
         Some(crate::cache::make_cached(typed))
@@ -307,6 +367,8 @@ where
         inner,
         params_fn: Some(params_fn),
         input_hash_fn: Some(input_hash_fn),
+        serialize_input_fn: Some(serialize_input_fn),
+        serialize_output_fn: Some(serialize_output_fn),
         make_cached_fn: Some(make_cached_fn),
     })
 }

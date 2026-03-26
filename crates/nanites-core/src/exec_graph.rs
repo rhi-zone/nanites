@@ -92,6 +92,12 @@ pub struct ExecNode {
     /// [`SerializableTask`](crate::registry::SerializableTask).
     /// `None` for tasks that don't implement the trait.
     pub params_snapshot: Option<JsonValue>,
+    /// Serialized input at spawn time. `Null` if the input type is not
+    /// serializable or serialization failed.
+    pub input: JsonValue,
+    /// Serialized output, set when the node completes successfully. `None`
+    /// if the output type is not serializable or the node has not completed.
+    pub output: Option<JsonValue>,
     /// Parent node id, if this task was spawned by another task.
     pub parent: Option<NodeId>,
     /// All child nodes spawned by this task.
@@ -132,6 +138,7 @@ impl ExecGraph {
         id: NodeId,
         task_type: impl Into<String>,
         params_snapshot: Option<JsonValue>,
+        input: JsonValue,
         parent: Option<NodeId>,
     ) {
         let mut inner = self.inner.lock().unwrap();
@@ -139,6 +146,8 @@ impl ExecGraph {
             id,
             task_type: task_type.into(),
             params_snapshot,
+            input,
+            output: None,
             parent,
             children: Vec::new(),
             terminal: None,
@@ -171,6 +180,17 @@ impl ExecGraph {
                 output_type,
                 output,
             });
+        }
+    }
+
+    /// Store the serialized output on a completed node.
+    ///
+    /// Call this just before (or alongside) [`set_completed`] when the output
+    /// type is serializable. No-op if the node is not found.
+    pub fn set_output(&self, id: NodeId, output: JsonValue) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(node) = inner.nodes.get_mut(&id) {
+            node.output = Some(output);
         }
     }
 
@@ -275,8 +295,8 @@ mod tests {
     #[test]
     fn record_and_complete() {
         let graph = ExecGraph::new();
-        graph.record_spawn(0, "MyTask", None, None);
-        graph.record_spawn(1, "ChildTask", None, Some(0));
+        graph.record_spawn(0, "MyTask", None, serde_json::Value::Null, None);
+        graph.record_spawn(1, "ChildTask", None, serde_json::Value::Null, Some(0));
 
         graph.set_completed(0, "String", None);
         graph.set_failed(1, "something went wrong");
@@ -299,10 +319,10 @@ mod tests {
     #[test]
     fn children_query() {
         let graph = ExecGraph::new();
-        graph.record_spawn(0, "Root", None, None);
-        graph.record_spawn(1, "A", None, Some(0));
-        graph.record_spawn(2, "B", None, Some(0));
-        graph.record_spawn(3, "C", None, Some(1));
+        graph.record_spawn(0, "Root", None, serde_json::Value::Null, None);
+        graph.record_spawn(1, "A", None, serde_json::Value::Null, Some(0));
+        graph.record_spawn(2, "B", None, serde_json::Value::Null, Some(0));
+        graph.record_spawn(3, "C", None, serde_json::Value::Null, Some(1));
 
         let children = graph.get_children(0);
         assert_eq!(children, vec![1, 2]);
@@ -314,8 +334,8 @@ mod tests {
     #[test]
     fn running_nodes_query() {
         let graph = ExecGraph::new();
-        graph.record_spawn(0, "A", None, None);
-        graph.record_spawn(1, "B", None, None);
+        graph.record_spawn(0, "A", None, serde_json::Value::Null, None);
+        graph.record_spawn(1, "B", None, serde_json::Value::Null, None);
         graph.set_completed(0, "()", None);
 
         let running = graph.running_nodes();
@@ -327,7 +347,13 @@ mod tests {
     fn params_snapshot_stored() {
         let graph = ExecGraph::new();
         let params = serde_json::json!({"model": "gpt-4", "temperature": 0.7});
-        graph.record_spawn(0, "LlmTask", Some(params.clone()), None);
+        graph.record_spawn(
+            0,
+            "LlmTask",
+            Some(params.clone()),
+            serde_json::Value::Null,
+            None,
+        );
 
         let node = graph.get(0).unwrap();
         assert_eq!(node.params_snapshot, Some(params));
