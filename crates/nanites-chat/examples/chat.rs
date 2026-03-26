@@ -5,12 +5,21 @@
 //!
 //! # Running
 //!
-//! Set one of:
-//!   OPENAI_API_KEY=sk-...     (uses gpt-4o-mini)
-//!   ANTHROPIC_API_KEY=sk-...  (uses claude-3-5-haiku-20241022)
+//!   cargo run --example chat -p nanites-chat -- provider:model
 //!
-//! Then:
-//!   cargo run --example chat
+//! Examples:
+//!   cargo run --example chat -p nanites-chat -- anthropic:claude-3-5-haiku-20241022
+//!   cargo run --example chat -p nanites-chat -- openai:gpt-4o-mini
+//!   cargo run --example chat -p nanites-chat -- cohere:command-r
+//!   cargo run --example chat -p nanites-chat -- gemini:gemini-1.5-flash
+//!   cargo run --example chat -p nanites-chat -- perplexity:llama-3.1-sonar-small-128k-online
+//!
+//! Required environment variables per provider:
+//!   anthropic  → ANTHROPIC_API_KEY
+//!   openai     → OPENAI_API_KEY
+//!   cohere     → COHERE_API_KEY
+//!   gemini     → GEMINI_API_KEY
+//!   perplexity → PERPLEXITY_API_KEY
 //!
 //! Type a message and press Enter. Ctrl-D or Ctrl-C to quit.
 
@@ -19,15 +28,29 @@ use std::io::{self, BufRead, Write as IoWrite};
 use nanites_chat::{CharacterState, HandleMessageTask, HistoryEntry};
 use nanites_core::Runtime;
 use nanites_rig::RigCompletionExecutor;
-use rig::client::{CompletionClient as _, ProviderClient as _};
+use rig::client::CompletionClient as _;
 
 const MAX_HISTORY: usize = 10;
 
 #[tokio::main]
 async fn main() {
-    // ── Detect provider from environment ─────────────────────────────────────
+    // ── Parse provider:model from argv ───────────────────────────────────────
 
-    let (provider, model_name) = detect_provider();
+    let arg = std::env::args().nth(1).unwrap_or_else(|| {
+        eprintln!("usage: cargo run --example chat -p nanites-chat -- provider:model");
+        eprintln!();
+        eprintln!("providers: anthropic, openai, cohere, gemini, perplexity");
+        eprintln!();
+        eprintln!("examples:");
+        eprintln!("  anthropic:claude-3-5-haiku-20241022");
+        eprintln!("  openai:gpt-4o-mini");
+        eprintln!("  cohere:command-r");
+        eprintln!("  gemini:gemini-1.5-flash");
+        eprintln!("  perplexity:llama-3.1-sonar-small-128k-online");
+        std::process::exit(1);
+    });
+
+    let (provider, model_name) = parse_provider_model(&arg);
 
     eprintln!("nanites-chat example");
     eprintln!("Provider: {provider}  Model: {model_name}");
@@ -118,19 +141,19 @@ async fn main() {
     eprintln!("\ngoodbye.");
 }
 
-// ─── Provider detection ────────────────────────────────────────────────────────
+// ─── Argument parsing ──────────────────────────────────────────────────────────
 
-fn detect_provider() -> (String, String) {
-    if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-        ("anthropic".into(), "claude-3-5-haiku-20241022".into())
-    } else if std::env::var("OPENAI_API_KEY").is_ok() {
-        ("openai".into(), "gpt-4o-mini".into())
-    } else {
-        eprintln!(
-            "error: no API key found.\n\
-             Set OPENAI_API_KEY or ANTHROPIC_API_KEY and try again."
-        );
-        std::process::exit(1);
+fn parse_provider_model(arg: &str) -> (String, String) {
+    match arg.split_once(':') {
+        Some((provider, model)) if !provider.is_empty() && !model.is_empty() => {
+            (provider.to_owned(), model.to_owned())
+        }
+        _ => {
+            eprintln!(
+                "error: argument must be in the form provider:model (e.g. anthropic:claude-3-5-haiku-20241022)"
+            );
+            std::process::exit(1);
+        }
     }
 }
 
@@ -139,18 +162,60 @@ fn detect_provider() -> (String, String) {
 fn build_executor(provider: &str, model_name: &str) -> RigCompletionExecutor {
     match provider {
         "anthropic" => {
-            let client = rig::providers::anthropic::Client::from_env();
+            let api_key = require_env("ANTHROPIC_API_KEY", provider);
+            let client = rig::providers::anthropic::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
             let model = client.completion_model(model_name);
             RigCompletionExecutor::new().with_model(model_name, model)
         }
         "openai" => {
-            let client = rig::providers::openai::Client::from_env();
+            let api_key = require_env("OPENAI_API_KEY", provider);
+            let client = rig::providers::openai::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "cohere" => {
+            let api_key = require_env("COHERE_API_KEY", provider);
+            let client = rig::providers::cohere::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "gemini" => {
+            let api_key = require_env("GEMINI_API_KEY", provider);
+            let client = rig::providers::gemini::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "perplexity" => {
+            let api_key = require_env("PERPLEXITY_API_KEY", provider);
+            let client = rig::providers::perplexity::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
             let model = client.completion_model(model_name);
             RigCompletionExecutor::new().with_model(model_name, model)
         }
         other => {
-            eprintln!("unknown provider: {other}");
+            eprintln!(
+                "error: unknown provider {other:?}\n\
+                 supported providers: anthropic, openai, cohere, gemini, perplexity"
+            );
             std::process::exit(1);
         }
     }
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+
+fn require_env(var: &str, provider: &str) -> String {
+    std::env::var(var).unwrap_or_else(|_| {
+        eprintln!("error: {var} is not set (required for provider {provider:?})");
+        std::process::exit(1);
+    })
+}
+
+fn fatal_client_error<T>(provider: &str, e: impl std::fmt::Display) -> T {
+    eprintln!("error: failed to build {provider:?} client: {e}");
+    std::process::exit(1);
 }
