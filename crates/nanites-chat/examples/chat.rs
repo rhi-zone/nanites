@@ -13,13 +13,39 @@
 //!   cargo run --example chat -p nanites-chat -- cohere:command-r
 //!   cargo run --example chat -p nanites-chat -- gemini:gemini-1.5-flash
 //!   cargo run --example chat -p nanites-chat -- perplexity:llama-3.1-sonar-small-128k-online
+//!   cargo run --example chat -p nanites-chat -- azure:gpt-4o
+//!   cargo run --example chat -p nanites-chat -- deepseek:deepseek-chat
+//!   cargo run --example chat -p nanites-chat -- galadriel:llama3.1-70b
+//!   cargo run --example chat -p nanites-chat -- groq:llama-3.3-70b-versatile
+//!   cargo run --example chat -p nanites-chat -- huggingface:Qwen/Qwen2.5-72B-Instruct
+//!   cargo run --example chat -p nanites-chat -- hyperbolic:meta-llama/Meta-Llama-3.1-70B-Instruct
+//!   cargo run --example chat -p nanites-chat -- mira:claude-3-5-sonnet-20241022
+//!   cargo run --example chat -p nanites-chat -- mistral:mistral-small-latest
+//!   cargo run --example chat -p nanites-chat -- moonshot:moonshot-v1-8k
+//!   cargo run --example chat -p nanites-chat -- ollama:llama3.2
+//!   cargo run --example chat -p nanites-chat -- openrouter:openai/gpt-4o-mini
+//!   cargo run --example chat -p nanites-chat -- together:meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo
+//!   cargo run --example chat -p nanites-chat -- xai:grok-beta
 //!
 //! Required environment variables per provider:
-//!   anthropic  → ANTHROPIC_API_KEY
-//!   openai     → OPENAI_API_KEY
-//!   cohere     → COHERE_API_KEY
-//!   gemini     → GEMINI_API_KEY
-//!   perplexity → PERPLEXITY_API_KEY
+//!   anthropic   → ANTHROPIC_API_KEY
+//!   openai      → OPENAI_API_KEY
+//!   cohere      → COHERE_API_KEY
+//!   gemini      → GEMINI_API_KEY
+//!   perplexity  → PERPLEXITY_API_KEY
+//!   azure       → AZURE_API_KEY (or AZURE_TOKEN), AZURE_API_VERSION, AZURE_ENDPOINT
+//!   deepseek    → DEEPSEEK_API_KEY
+//!   galadriel   → GALADRIEL_API_KEY
+//!   groq        → GROQ_API_KEY
+//!   huggingface → HUGGINGFACE_API_KEY
+//!   hyperbolic  → HYPERBOLIC_API_KEY
+//!   mira        → MIRA_API_KEY
+//!   mistral     → MISTRAL_API_KEY
+//!   moonshot    → MOONSHOT_API_KEY
+//!   ollama      → (none — connects to http://localhost:11434)
+//!   openrouter  → OPENROUTER_API_KEY
+//!   together    → TOGETHER_API_KEY
+//!   xai         → XAI_API_KEY
 //!
 //! Type a message and press Enter. Ctrl-D or Ctrl-C to quit.
 
@@ -28,7 +54,7 @@ use std::io::{self, BufRead, Write as IoWrite};
 use nanites_chat::{CharacterState, HandleMessageTask, HistoryEntry};
 use nanites_core::Runtime;
 use nanites_rig::RigCompletionExecutor;
-use rig::client::CompletionClient as _;
+use rig::client::{CompletionClient as _, ProviderClient as _};
 
 const MAX_HISTORY: usize = 10;
 
@@ -39,7 +65,11 @@ async fn main() {
     let arg = std::env::args().nth(1).unwrap_or_else(|| {
         eprintln!("usage: cargo run --example chat -p nanites-chat -- provider:model");
         eprintln!();
-        eprintln!("providers: anthropic, openai, cohere, gemini, perplexity");
+        eprintln!(
+            "providers: anthropic, azure, cohere, deepseek, galadriel, gemini, groq, \
+             huggingface, hyperbolic, mira, mistral, moonshot, ollama, openai, openrouter, \
+             perplexity, together, xai"
+        );
         eprintln!();
         eprintln!("examples:");
         eprintln!("  anthropic:claude-3-5-haiku-20241022");
@@ -47,6 +77,9 @@ async fn main() {
         eprintln!("  cohere:command-r");
         eprintln!("  gemini:gemini-1.5-flash");
         eprintln!("  perplexity:llama-3.1-sonar-small-128k-online");
+        eprintln!("  groq:llama-3.3-70b-versatile");
+        eprintln!("  mistral:mistral-small-latest");
+        eprintln!("  ollama:llama3.2");
         std::process::exit(1);
     });
 
@@ -168,16 +201,29 @@ fn build_executor(provider: &str, model_name: &str) -> RigCompletionExecutor {
             let model = client.completion_model(model_name);
             RigCompletionExecutor::new().with_model(model_name, model)
         }
-        "openai" => {
-            let api_key = require_env("OPENAI_API_KEY", provider);
-            let client = rig::providers::openai::Client::new(&api_key)
-                .unwrap_or_else(|e| fatal_client_error(provider, e));
+        "azure" => {
+            // Requires AZURE_API_KEY (or AZURE_TOKEN), AZURE_API_VERSION, AZURE_ENDPOINT.
+            let client = rig::providers::azure::Client::from_env();
             let model = client.completion_model(model_name);
             RigCompletionExecutor::new().with_model(model_name, model)
         }
         "cohere" => {
             let api_key = require_env("COHERE_API_KEY", provider);
             let client = rig::providers::cohere::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "deepseek" => {
+            let api_key = require_env("DEEPSEEK_API_KEY", provider);
+            let client = rig::providers::deepseek::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "galadriel" => {
+            let api_key = require_env("GALADRIEL_API_KEY", provider);
+            let client = rig::providers::galadriel::Client::new(&api_key)
                 .unwrap_or_else(|e| fatal_client_error(provider, e));
             let model = client.completion_model(model_name);
             RigCompletionExecutor::new().with_model(model_name, model)
@@ -189,6 +235,69 @@ fn build_executor(provider: &str, model_name: &str) -> RigCompletionExecutor {
             let model = client.completion_model(model_name);
             RigCompletionExecutor::new().with_model(model_name, model)
         }
+        "groq" => {
+            let api_key = require_env("GROQ_API_KEY", provider);
+            let client = rig::providers::groq::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "huggingface" => {
+            let api_key = require_env("HUGGINGFACE_API_KEY", provider);
+            let client = rig::providers::huggingface::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "hyperbolic" => {
+            let api_key = require_env("HYPERBOLIC_API_KEY", provider);
+            let client = rig::providers::hyperbolic::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "mira" => {
+            let api_key = require_env("MIRA_API_KEY", provider);
+            let client = rig::providers::mira::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "mistral" => {
+            let api_key = require_env("MISTRAL_API_KEY", provider);
+            let client = rig::providers::mistral::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "moonshot" => {
+            let api_key = require_env("MOONSHOT_API_KEY", provider);
+            let client = rig::providers::moonshot::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "ollama" => {
+            // No API key — connects to http://localhost:11434 by default.
+            let client = rig::providers::ollama::Client::new(rig::client::Nothing)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "openai" => {
+            let api_key = require_env("OPENAI_API_KEY", provider);
+            let client = rig::providers::openai::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "openrouter" => {
+            let api_key = require_env("OPENROUTER_API_KEY", provider);
+            let client = rig::providers::openrouter::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
         "perplexity" => {
             let api_key = require_env("PERPLEXITY_API_KEY", provider);
             let client = rig::providers::perplexity::Client::new(&api_key)
@@ -196,10 +305,26 @@ fn build_executor(provider: &str, model_name: &str) -> RigCompletionExecutor {
             let model = client.completion_model(model_name);
             RigCompletionExecutor::new().with_model(model_name, model)
         }
+        "together" => {
+            let api_key = require_env("TOGETHER_API_KEY", provider);
+            let client = rig::providers::together::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
+        "xai" => {
+            let api_key = require_env("XAI_API_KEY", provider);
+            let client = rig::providers::xai::Client::new(&api_key)
+                .unwrap_or_else(|e| fatal_client_error(provider, e));
+            let model = client.completion_model(model_name);
+            RigCompletionExecutor::new().with_model(model_name, model)
+        }
         other => {
             eprintln!(
                 "error: unknown provider {other:?}\n\
-                 supported providers: anthropic, openai, cohere, gemini, perplexity"
+                 supported providers: anthropic, azure, cohere, deepseek, galadriel, gemini, \
+                 groq, huggingface, hyperbolic, mira, mistral, moonshot, ollama, openai, \
+                 openrouter, perplexity, together, xai"
             );
             std::process::exit(1);
         }
