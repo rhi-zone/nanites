@@ -840,6 +840,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanites-chat"
+version = "0.0.1"
+dependencies = [
+ "nanites-core",
+ "nanites-rig",
+ "rig-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "nanites-core"
 version = "0.0.1"
 dependencies = [
