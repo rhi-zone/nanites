@@ -1,7 +1,7 @@
 //! [`Runtime`] — the entry point for task execution.
 //!
 //! The runtime:
-//! 1. Owns the [`Frontier`] and a list of global [`Scaffold`]s.
+//! 1. Owns the [`Frontier`], the [`ExecGraph`], and a list of global [`Scaffold`]s.
 //! 2. Applies scaffolds to each task before execution.
 //! 3. Drives tasks on the current tokio executor.
 //!
@@ -27,6 +27,7 @@ use crate::cancellation::CancellationToken;
 use crate::ctx::Ctx;
 use crate::dyn_task::{AnyInput, AnyOutput, SharedDynTask};
 use crate::error::RuntimeError;
+use crate::exec_graph::ExecGraph;
 use crate::frontier::{Frontier, FrontierHandle};
 use crate::handle::TaskHandle;
 use crate::scaffold::Scaffold;
@@ -34,11 +35,12 @@ use crate::task::Task;
 
 /// The nanites runtime.
 ///
-/// Cheap to clone — all clones share the same frontier, cancel token, and
-/// scaffold list.
+/// Cheap to clone — all clones share the same frontier, execution graph,
+/// cancel token, and scaffold list.
 #[derive(Clone)]
 pub struct Runtime {
     frontier: FrontierHandle,
+    exec_graph: ExecGraph,
     cancel: CancellationToken,
     scaffolds: Arc<Vec<Scaffold>>,
 }
@@ -47,6 +49,7 @@ impl fmt::Debug for Runtime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Runtime")
             .field("frontier_len", &self.frontier.inner().len())
+            .field("exec_graph_len", &self.exec_graph.len())
             .field("scaffolds", &self.scaffolds.len())
             .finish_non_exhaustive()
     }
@@ -63,6 +66,7 @@ impl Runtime {
     pub fn new() -> Self {
         Runtime {
             frontier: FrontierHandle::new(Frontier::new()),
+            exec_graph: ExecGraph::new(),
             cancel: CancellationToken::new(),
             scaffolds: Arc::new(Vec::new()),
         }
@@ -82,9 +86,15 @@ impl Runtime {
         self.cancel.cancel();
     }
 
-    /// The live task tree.
+    /// The live task tree (pending tasks only).
     pub fn frontier(&self) -> &Frontier {
         self.frontier.inner()
+    }
+
+    /// The monotonically-growing execution graph (all spawned tasks, including
+    /// completed, failed, and cancelled).
+    pub fn exec_graph(&self) -> &ExecGraph {
+        &self.exec_graph
     }
 
     // -------------------------------------------------------------------------
@@ -141,6 +151,7 @@ impl Runtime {
     fn root_ctx(&self) -> Ctx {
         Ctx::root(
             self.frontier.clone(),
+            self.exec_graph.clone(),
             self.cancel.clone(),
             Arc::clone(&self.scaffolds),
         )

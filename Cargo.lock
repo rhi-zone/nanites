@@ -844,6 +844,8 @@ name = "nanites-core"
 version = "0.0.1"
 dependencies = [
  "futures",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

@@ -147,9 +147,51 @@ impl Frontier {
         self.inner.lock().unwrap().nodes.values().cloned().collect()
     }
 
-    /// Remove a node (e.g. after completion, for memory hygiene).
+    /// Remove a node from the frontier (e.g. after completion, for memory
+    /// hygiene). Terminal tasks should be moved to the
+    /// [`ExecGraph`](crate::ExecGraph) before removal.
     pub fn remove(&self, id: NodeId) {
         self.inner.lock().unwrap().nodes.remove(&id);
+    }
+
+    /// Remove a node from the frontier once it has reached a terminal state
+    /// (Completed, Failed, or Cancelled). No-op if the node is still pending
+    /// or running, or if the id is unknown.
+    ///
+    /// Returns `true` if the node was removed.
+    pub fn remove_terminal(&self, id: NodeId) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let terminal = inner
+            .nodes
+            .get(&id)
+            .map(|n| {
+                matches!(
+                    n.status,
+                    NodeStatus::Completed | NodeStatus::Failed(_) | NodeStatus::Cancelled
+                )
+            })
+            .unwrap_or(false);
+        if terminal {
+            inner.nodes.remove(&id);
+        }
+        terminal
+    }
+
+    /// Get the children of a node currently in the frontier.
+    ///
+    /// Returns an empty vec if the node is unknown or has no children yet.
+    /// Note: children that have been removed from the frontier (after
+    /// completion) will not appear here — use
+    /// [`ExecGraph::get_children`](crate::ExecGraph::get_children) for the
+    /// full lineage record.
+    pub fn get_children(&self, id: NodeId) -> Vec<NodeId> {
+        self.inner
+            .lock()
+            .unwrap()
+            .nodes
+            .get(&id)
+            .map(|n| n.children.clone())
+            .unwrap_or_default()
     }
 
     /// Number of nodes currently tracked.
