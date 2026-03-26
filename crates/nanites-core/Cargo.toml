@@ -3,7 +3,8 @@ name = "nanites-core"
 version = "0.0.1"
 edition.workspace = true
 license.workspace = true
-description = "Parallel combinators for function orchestration"
+description = "Serializable task substrate for flexible orchestration"
 
 [dependencies]
 futures = "0.3"
+tokio = { version = "1", features = ["full"] }
