@@ -137,6 +137,29 @@ Tasks with typed input/output can be exposed as protocol endpoints via server-le
 - **Crescent surface** — crescent reimplements the substrate as a general orchestration library in pure Lua, not called "nanites." Same design patterns, different language, no dependency on the Rust crate.
 - **Vercel AI SDK vs rig** — AI SDK is TypeScript-only, not an option for Rust. Rig is fine for the Rust surface. Many providers are just OpenAI-compatible APIs anyway — crescent can hit them directly without a dedicated SDK per provider.
 
-## Open questions
+## Streaming
 
-- What does streaming look like at the executor + UI level? (Decided it's not a graph primitive, but the integration story is undesigned)
+Not a graph primitive (decided earlier — see decisions.md). Streaming is an executor + UI concern.
+
+The task is the same `CompletionTask`. The executor optionally sends chunks through a `tokio::sync::mpsc::Sender<Chunk>` side channel as they arrive. The task still returns the final complete output when done. The caller decides whether to listen to the channel.
+
+```rust
+let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel(32);
+
+// Caller spawns a listener for progressive rendering
+tokio::spawn(async move {
+    while let Some(chunk) = chunk_rx.recv().await {
+        print!("{}", chunk.text);
+    }
+});
+
+// Executor is configured with the channel
+let executor = RigCompletionExecutor::new()
+    .with_model("claude", model)
+    .with_chunk_sender(chunk_tx);
+
+let result = runtime.run(CompletionTask { model: "claude".into(), system: None }, prompt).await?;
+// result is the complete output; chunks were sent progressively
+```
+
+The channel is set up by the caller, attached to the executor, invisible to the task. No new types in nanites-core.
