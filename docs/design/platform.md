@@ -129,9 +129,15 @@ Tasks with typed input/output can be exposed as protocol endpoints via server-le
 
 **maki specifically:** proved that MCP + typed schemas + multi-provider AI is the right surface. But the node-based UI was a dead end. Nanites inherits the architecture without the editor.
 
+## Resolved questions
+
+- **Route fallback** — impossible with structured output. Classification returns a typed enum; unknown variants are a type error, not a runtime concern.
+- **Gate scope** — up to the implementor. `Gate` is a combinator wrapping a subtree; whether the runtime blocks elsewhere is the user's decision.
+- **ML model serving** — no single answer. FFI, subprocess, gRPC all have different tradeoffs (latency, isolation, language support). Provide executor implementations for each; the user picks what fits.
+- **Crescent surface** — crescent reimplements the substrate as a general orchestration library in pure Lua, not called "nanites." Same design patterns, different language, no dependency on the Rust crate.
+- **Vercel AI SDK vs rig** — AI SDK is TypeScript-only, not an option for Rust. Rig is fine for the Rust surface. Many providers are just OpenAI-compatible APIs anyway — crescent can hit them directly without a dedicated SDK per provider.
+
 ## Open questions
 
-- How should `Route` handle unknown classifications? Fallback branch? Error?
-- Should `Gate` block the runtime or just the subtree?
-- What's the ML model serving story? Subprocess? FFI? gRPC?
-- How does the Lua surface (crescent) differ from the Rust surface? Same task types, different syntax? Or crescent reimplements the substrate?
+- How should the SWE agent design handle cross-file understanding? (Need to read module A to edit module B — context construction across subtasks)
+- What does streaming look like at the executor + UI level? (Decided it's not a graph primitive, but the integration story is undesigned)
