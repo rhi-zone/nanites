@@ -120,9 +120,32 @@ If shared code ever makes sense, it should be a third crate that both depend on,
 
 ---
 
+## Relationship to Moonlet
+
+### Nanites and moonlet are orthogonal, not competing
+
+**Decision:** Nanites describes work (task as data). Moonlet controls access (capability as primitive). They compose: a moonlet script constructs nanites task graphs; nanites spawns moonlet-backed executors.
+
+**Why:** Moonlet is a runtime — it runs code, manages capabilities, provides security boundaries. Nanites is an orchestration substrate — it manages work as inspectable, serializable, cacheable task graphs. In moonlet, control flow is implicit in the Lua script (can't inspect, pause, cache, replay). In nanites, work is data (serializable structs with typed edges), so all of that is first-class.
+
+Neither subsumes the other. Moonlet decides what you're allowed to do. Nanites decides what work needs doing.
+
+---
+
+## Nanites as ecosystem orchestrator
+
+### Nanites orchestrates the rhi ecosystem, not just LLMs
+
+**Decision:** Every rhi project is a potential nanites executor — normalize for code analysis, tiltshift for binary extraction, paraphase for format routing, rescribe for document conversion, unshape for media generation, moonlet/crescent for Lua execution. LLMs are just one backend among many.
+
+**Why:** The thesis says LLMs fall away at the leaves as problems become well-defined. The ecosystem's tools ARE the well-defined leaves. The LLM is glue between tools that each do their thing. "AI orchestration" is the wrong framing — it's just orchestration.
+
+---
+
 ## What nanites is NOT
 
 - Not LLM-specific — LLM calls are one node type among many
+- Not a runtime — it doesn't run code, it manages work; moonlet is the runtime
 - Not a framework you build agents on — orchestration is a Rust program, the substrate just makes it inspectable and composable
 - Not conversational — conversation is context poisoning; turns are the primitive, and turns don't accumulate
 - Not a graph framework — no `add_node`/`connect`; control flow is the graph
