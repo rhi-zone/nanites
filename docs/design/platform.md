@@ -139,5 +139,4 @@ Tasks with typed input/output can be exposed as protocol endpoints via server-le
 
 ## Open questions
 
-- How should the SWE agent design handle cross-file understanding? (Need to read module A to edit module B — context construction across subtasks)
 - What does streaming look like at the executor + UI level? (Decided it's not a graph primitive, but the integration story is undesigned)
